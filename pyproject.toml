@@ -1,0 +1,32 @@
+[project]
+name = "p2-viewer"
+version = "0.1.0"
+description = "InfiRay P2 Pro thermal camera viewer: annotated thermal video via v4l2loopback"
+readme = "README.md"
+authors = [
+    { name = "Laura Batalha", email = "5883822+lbatalha@users.noreply.github.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.5.4",
+    "pillow>=13.0.0",
+]
+
+[project.optional-dependencies]
+opencv = [
+    "opencv-python>=5.0",
+]
+qt = [
+    "pyside6-essentials>=6.12",
+]
+# Everything needed for the default experience: native window + both backends.
+all = [
+    "p2-viewer[opencv,qt]",
+]
+
+[project.scripts]
+p2-viewer = "p2_viewer:main"
+
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14.0"]
+build-backend = "uv_build"
