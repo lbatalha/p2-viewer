@@ -163,5 +163,9 @@ cython_debug/
 #.idea/
 
 
-# Snapshot output from the viewer
-p2pro-*.png
+# Generated output: snapshots and --csv measurement logs
+*.png
+*.csv
+
+# Documentation images are part of the source tree
+!docs/*.png
