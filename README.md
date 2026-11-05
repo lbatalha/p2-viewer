@@ -101,7 +101,7 @@ there is no `--out` either.
 | Backend  | Flag                | Notes |
 | -------- | ------------------- | ----- |
 | `v4l2`   | `--backend v4l2`    | **Default.** Talks to the kernel directly (ioctl + mmap). Fastest, no extra dependencies, Linux only. |
-| `opencv` | `--backend opencv`  | Uses `cv2.VideoCapture`. Exists for portability — OpenCV is how the camera is reached on macOS and Windows, which have no V4L2. Slower and pulls in a large dependency, so it is not the default on Linux. |
+| `opencv` | `--backend opencv`  | Uses `cv2.VideoCapture`, the way the camera is reached where there is no V4L2. Slower and pulls in a large dependency. |
 
 The OpenCV backend also accepts a bare index (`--cam 4`) instead of a node
 path.
@@ -141,10 +141,8 @@ timestamp,name,measurement,value
 2026-11-05T20:38:34.631+00:00,min,2,21.96
 ```
 
-Sampling is decoupled from the 25 fps frame rate: the file grows by about one
-group of rows per second, whatever the frame rate. The reading written is the
-frame current at that moment, not an average of the second, so values match
-what the overlay showed.
+The file grows by about one group of rows per second, whatever the frame
+rate. Each row holds the reading from the most recent frame.
 
 | Column | Meaning |
 | ------ | ------- |
@@ -161,8 +159,7 @@ numbers of the ones after it. Points record the pixel under the marker, while
 `min`/`max`/`center` are per-frame readings. A point placed between two samples
 first appears in the next one.
 
-All progress messages go to stderr, so stdout carries only data. That check is
-cheap: piping stdout to a file gives an empty file during a normal run.
+All progress messages go to stderr, so stdout carries only data.
 
 ### In the window
 
@@ -186,15 +183,10 @@ The `▸`/`▾` button at the end of the button row collapses the panel down to
 just that row, which is useful when you want the image unobstructed. The table
 only appears once at least one point is placed, so a fresh window starts
 unobstructed and the toggle button is disabled until then. The glyph shows the
-state: `▸` means the table is hidden, `▾` means it is showing. Without points
-there is nothing to show, so the table stays hidden whether the toggle is on
-or off.
+state: `▸` means the table is hidden, `▾` means it is showing.
 
 The three buttons in the control strip are constant size and sit at 50%
-opacity, so they stay legible over a bright thermal image without covering it.
-Each glyph is centred on its own ink rather than by font metrics, which keeps
-the row evenly aligned despite the glyphs coming from different fallback
-fonts.
+opacity.
 
 Hover, points and the panel are drawn by the window only. Frames published to
 `--out` never contain them, so a virtual camera feed stays clean; use
@@ -235,24 +227,25 @@ or transmittance does not change the values in the video stream. They are
 the apparent scene temperature, as if every surface were a black body, so
 any correction has to be done in software.
 
-That is accurate for high-emissivity surfaces such as skin or matte paint,
-and badly wrong for shiny metal or glass, which reflect their surroundings
-instead of radiating heat.
+It is accurate for high-emissivity surfaces such as skin or matte paint, and
+wrong for shiny metal or glass, which reflect their surroundings instead of
+radiating heat.
 
 ### Measurement range
 
 The camera has two gain settings. **High gain** (the default) is more
-sensitive but saturates at about 183 C. **Low gain** reaches much further -
-the same target measured around 437 C in low gain while high gain pinned it
-at 183 C. Which one you want depends on what you are pointing at:
+sensitive but saturates at about 183 C. **Low gain** reaches much further,
+to at least 437 C. Which one you want depends on what you are pointing at:
 
 ```sh
 uv run p2-viewer --gain low
 ```
 
 The viewer never changes this unless asked, so it does not need write access
-to the USB device by default. If you need the corrected value, pass an
-emissivity and the viewer will apply a grey-body correction:
+to the USB device by default.
+
+If you need the corrected value, pass an emissivity and the viewer will apply
+a grey-body correction:
 
 ```sh
 uv run p2-viewer --emissivity 0.95 --reflected-temp 294
@@ -264,9 +257,7 @@ emissivity into it, the viewer follows along automatically. The viewer prints
 the values it is using at startup.
 
 The correction is off by default, so the viewer shows exactly what the
-camera reports. Whether the vendor app applies the same correction has not
-been established; comparing the two on the same target is the way to find
-out.
+camera reports.
 
 ## How the camera protocol works
 
@@ -284,8 +275,8 @@ row 192 .. 383    the same scene, as raw temperature numbers
 ```
 
 The **top half** is an ordinary image: the thermal scene rendered in whichever
-false-colour palette the camera has selected. You could display it as-is, but
-it only tells you how colours map to heat, not actual values.
+false-colour palette the camera has selected. It shows how colours map to
+heat, not actual values.
 
 The **bottom half** is the useful part. It is not really image data despite
 sharing the YUYV container: every pixel there is a **16-bit little-endian
@@ -303,8 +294,5 @@ kelvin = raw / 64
 celsius = kelvin - 273.15
 ```
 
-That is the whole decode. Values in a normal room land around 19,000–20,000,
-which works out to roughly 22–25 °C.
-
-Because every pixel has a real temperature, the viewer can take the minimum,
-maximum and the pixel at the centre of the frame, and label them directly.
+Values in a normal room land around 19,000–20,000, which works out to roughly
+22–25 °C.
