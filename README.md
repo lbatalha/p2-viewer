@@ -121,14 +121,48 @@ reliably target a loopback device.
 | `--unit {C,F,K}` | Temperature unit for labels (default `C`) |
 | `--scale N` | Integer upscale factor (default `3`, so 256x192 becomes 768x576) |
 | `--font NAME` | Font family or file path (default `monospace`, resolved via `fc-match`) |
+| `--font-size PX` | Label font size in pixels (default `14`); markers and legend ticks scale with it |
 | `--emissivity VALUE` | Apply a grey-body emissivity correction: a number 0-1, or `auto` to use the camera's own setting |
 | `--reflected-temp K` | Background temperature for that correction, in kelvin, or `auto` (default `300`) |
 | `--gain {high,low}` | Set the camera's measurement range. Off by default; needs USB write access |
 | `--frames N` | Stop after N frames (0 = run forever) |
 
-The window shows the frame with a centre crosshair, markers on the coldest and
-hottest pixels, and a colour scale. Press `Escape` or close the window to
-quit; `Ctrl-C` works too.
+### In the window
+
+The image carries a centre crosshair, markers on the coldest and hottest
+pixels, and a colour scale. On top of that the window is interactive:
+
+| Action | Effect |
+| ------ | ------ |
+| Move the mouse | Temperature under the cursor, in a small readout |
+| Left click | Drop a sample point, up to 4 at once |
+| Right click | Remove the most recently placed point |
+| `Space` or **Pause** | Freeze the image; click again to resume |
+| `S` or **Snapshot** | Save the current frame as `p2pro-<timestamp>.png` in the working directory |
+| `Escape` or close | Quit; `Ctrl-C` works too |
+
+The panel in the top-left lists each sample point with its current, minimum,
+maximum and average temperature since the point was placed. The `×` beside a
+row removes that point, and the remaining points renumber themselves.
+
+The `▸`/`▾` button at the end of the button row collapses the panel down to
+just that row, which is useful when you want the image unobstructed. The table
+only appears once at least one point is placed, so a fresh window starts
+unobstructed and the toggle button is disabled until then. The glyph shows the
+state: `▸` means the table is hidden, `▾` means it is showing. Without points
+there is nothing to show, so the table stays hidden whether the toggle is on
+or off.
+
+The three buttons in the control strip are constant size and sit at 50%
+opacity, so they stay legible over a bright thermal image without covering it.
+Each glyph is centred on its own ink rather than by font metrics, which keeps
+the row evenly aligned despite the glyphs coming from different fallback
+fonts.
+
+Hover, points and the panel are drawn by the window only. Frames published to
+`--out` never contain them, so a virtual camera feed stays clean; use
+**Snapshot** if you want the annotated image. Snapshots are the rendered frame
+without any of the window overlay either.
 
 ## Camera settings
 

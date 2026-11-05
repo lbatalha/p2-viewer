@@ -14,7 +14,7 @@ from PIL import Image, ImageDraw, ImageFont
 from . import backend, colormaps
 from .calibration import DEFAULT_REFLECTED_TEMPERATURE, correct_celsius
 from .frame import CAM_HEIGHT, CAM_WIDTH, FrameStats, decode_radiometric, frame_stats
-from .window import DisplayError, Window
+from .window import DisplayError, Frame, Window
 
 # unit -> (scale, offset, symbol); value = celsius * scale + offset
 UNITS = {
@@ -27,6 +27,12 @@ DEFAULT_UNIT = "C"
 
 #: Outline drawn around label text, so it stays readable over any colour.
 LABEL_STROKE = 2
+
+#: Default font size for the main labels.
+DEFAULT_FONT_SIZE = 14
+
+#: Gap between the legend's unit caption and the top of the colour bar.
+LEGEND_CAPTION_GAP = 5
 
 # --- Rendering ----------------------------------------------------------------
 # Markers are colour-coded: red = hottest, blue = coldest, green = centre.
@@ -76,21 +82,27 @@ class Renderer:
         font: str = "monospace",
         palette: str = colormaps.DEFAULT_PALETTE,
         unit: str = DEFAULT_UNIT,
+        font_size: int = DEFAULT_FONT_SIZE,
     ) -> None:
         self.scale = scale
         self.out_w = CAM_WIDTH * scale
         self.out_h = CAM_HEIGHT * scale
         self.lut = colormaps.build_lut(palette)
         self.unit = unit
-        self.font = load_font(font, 14)
-        self.font_small = load_font(font, 11)
+        self.font_size = font_size
+        self.font = load_font(font, font_size)
+        # Secondary labels (markers and legend ticks) are slightly smaller.
+        self.font_small = load_font(font, max(7, round(font_size * 0.8)))
         # legend geometry (kept here so render and layout agree)
         self.bar_w = 14
         self.legend_pad = 6          # gap between bar and its tick labels
         self.legend_right = 10       # margin from right edge
         self.legend_h = min(self.out_h - 80, 360)
+        # Widest tick label the legend can show, so the gutter fits whatever
+        # font size was asked for.
+        self.legend_text_w = self._text_size("-888\u00b0", self.font_small)[0]
 
-    def _fmt(self, celsius: float, decimals: int = 1) -> str:
+    def format_temp(self, celsius: float, decimals: int = 1) -> str:
         """Format a Celsius value for display in the configured unit."""
         scale, offset, sym = UNITS[self.unit]
         return f"{celsius * scale + offset:.{decimals}f}{sym}"
@@ -105,16 +117,34 @@ class Renderer:
         left, top, right, bottom = font.getbbox(text)
         return right - left, bottom - top
 
+    def _text_ink_bottom(self, text: str, font) -> int:
+        """How far the ink reaches below the drawing origin.
+
+        The y passed to ``draw.text`` is the top of the font's box, not of the
+        ink, so a caption positioned from the box height alone can end up
+        touching whatever sits underneath it.
+        """
+        return font.getbbox(text)[3]
+
     def _legend_geometry(self) -> tuple[int, int, int, int]:
         """Return (bar_x, bar_y, bar_w, bar_h)."""
-        bar_x = self.out_w - self.legend_right - self.legend_pad - 34 - self.bar_w
+        bar_x = (
+            self.out_w - self.legend_right - self.legend_pad
+            - self.legend_text_w - self.bar_w
+        )
         bar_y = (self.out_h - self.legend_h) // 2
         return bar_x, bar_y, self.bar_w, self.legend_h
 
     def _legend_obstacle(self) -> tuple[int, int, int, int]:
         """Box covering the legend bar plus its labels, for label avoidance."""
         bx, by, bw, bh = self._legend_geometry()
-        return (bx - 6, by - 20, bx + bw + 34 + self.legend_pad, by + bh + 8)
+        top = by - self._text_ink_bottom("\u00b0C", self.font_small) - 2 * LABEL_STROKE - 8
+        return (
+            bx - 6,
+            top,
+            bx + bw + self.legend_text_w + self.legend_pad + 4,
+            by + bh + 8,
+        )
 
     def _pick_label_pos(
         self, px: int, py: int, size: tuple[int, int], obstacles
@@ -171,7 +201,7 @@ class Renderer:
         # centre crosshair + reading
         draw.line([(cx - 10, cy), (cx + 10, cy)], fill=centre_colour, width=1)
         draw.line([(cx, cy - 10), (cx, cy + 10)], fill=centre_colour, width=1)
-        centre_text = self._fmt(stats.t_center)
+        centre_text = self.format_temp(stats.t_center)
         csize = self._text_size(centre_text, self.font)
         cx_t, cy_t, _ = self._pick_label_pos(cx + 12, cy, csize, obstacles)
         draw.text(
@@ -184,8 +214,8 @@ class Renderer:
 
         # min / max markers (draw max last so it wins any residual overlap)
         markers = [
-            (stats.min_pos, self._fmt(stats.t_min), (120, 180, 255)),
-            (stats.max_pos, self._fmt(stats.t_max), (255, 80, 80)),
+            (stats.min_pos, self.format_temp(stats.t_min), (120, 180, 255)),
+            (stats.max_pos, self.format_temp(stats.t_max), (255, 80, 80)),
         ]
         placed = []
         for pos, label, colour in markers:
@@ -226,18 +256,25 @@ class Renderer:
             # tick mark
             draw.line([(bx + bw, tick_y), (bx + bw + 3, tick_y)],
                       fill=(255, 255, 255), width=1)
-            text = self._fmt(temp, decimals=0)
+            text = self.format_temp(temp, decimals=0)
             tw, th = self._text_size(text, tick_font)
             ty = min(max(tick_y - th // 2, 0), self.out_h - th - 1)
             draw.text((label_x, ty), text, fill=(255, 255, 255), font=tick_font,
                       stroke_width=LABEL_STROKE, stroke_fill=(0, 0, 0))
 
-        # unit caption, centred over the bar itself
+        # Unit caption, centred over the bar and clear of its top edge: the
+        # ink reaches LABEL_STROKE below the glyph box, so the gap has to
+        # account for the outline as well as the text itself.
         cap = UNITS[self.unit][2]
-        cw, ch = self._text_size(cap, tick_font)
+        cw, _ = self._text_size(cap, tick_font)
+        cap_y = (
+            by - LEGEND_CAPTION_GAP - LABEL_STROKE
+            - self._text_ink_bottom(cap, tick_font)
+        )
         bar_centre = bx + bw // 2
-        draw.text((bar_centre - cw // 2, by - ch - 5), cap, fill=(200, 200, 200),
-                  font=tick_font, stroke_width=LABEL_STROKE, stroke_fill=(0, 0, 0))
+        draw.text((bar_centre - cw // 2, max(LABEL_STROKE + 1, cap_y)), cap,
+                  fill=(200, 200, 200), font=tick_font,
+                  stroke_width=LABEL_STROKE, stroke_fill=(0, 0, 0))
 
 
 # --- Main ---------------------------------------------------------------------
@@ -303,6 +340,8 @@ def main() -> int:
     ap.add_argument("--no-window", action="store_true",
                     help="do not open a display window")
     ap.add_argument("--scale", type=int, default=3, help="integer upscale factor")
+    ap.add_argument("--font-size", type=int, default=DEFAULT_FONT_SIZE, metavar="PX",
+                    help="label font size in pixels (default: %(default)s)")
     ap.add_argument("--font", default="monospace",
                     help="font family name or path (default: monospace, "
                          "resolved via fc-match)")
@@ -365,7 +404,9 @@ def main() -> int:
     cam = backend.open_capture(args.backend, cam_path)
     sink = backend.open_sink(out_path) if use_sink else None
 
-    renderer = Renderer(args.scale, args.font, args.palette, args.unit)
+    renderer = Renderer(
+        args.scale, args.font, args.palette, args.unit, args.font_size
+    )
     out_w, out_h = renderer.out_w, renderer.out_h
 
     class Producer:
@@ -392,7 +433,7 @@ def main() -> int:
             self.frames += 1
             if args.frames and self.frames >= args.frames:
                 self.done = True
-            return rgb
+            return Frame(rgb, temps)
 
     producer = Producer()
     window = None
@@ -415,7 +456,10 @@ def main() -> int:
 
         if use_window:
             try:
-                window = Window(f"P2 Pro {out_w}x{out_h}")
+                window = Window(
+                    f"P2 Pro {out_w}x{out_h}",
+                    format_temp=renderer.format_temp,
+                )
                 window.open(out_w, out_h)
             except DisplayError as exc:
                 # A missing display should not kill a sink-only pipeline.
