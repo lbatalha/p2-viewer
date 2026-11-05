@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -294,6 +296,63 @@ def _resolve_setting(value: str, reader, name: str) -> float:
     return reader(VendorControl())
 
 
+class CsvLogger:
+    """Stream one measurement per line to a CSV file.
+
+    Each frame produces one row per tracked value: the frame's minimum,
+    maximum and centre readings plus one row for every sample point (``P1``,
+    ``P2``, ...). Columns are timestamp, name, measurement number and value.
+
+    The measurement number counts frames, so rows from the same frame share
+    it and the numbers never repeat -- that makes the output easy to pivot
+    or diff even while points are added and removed.
+    """
+
+    COLUMNS = ("timestamp", "name", "measurement", "value")
+
+    def __init__(self, path: Path) -> None:
+        self._file = open(path, "w", newline="", encoding="utf-8")
+        self._writer = csv.writer(self._file)
+        self._writer.writerow(self.COLUMNS)
+        self.measurement = 0
+
+    def log(self, stats: FrameStats, points, temps: np.ndarray) -> None:
+        """Record this frame's readings for the extremes and each point."""
+        self.measurement += 1
+        # ISO 8601 with a UTC offset, so merged logs stay unambiguous.
+        stamp = datetime.now().astimezone().isoformat(timespec="milliseconds")
+        readings = [
+            ("min", stats.t_min),
+            ("max", stats.t_max),
+            ("center", stats.t_center),
+        ]
+        # Read point values straight from this frame; SamplePoint keeps only
+        # running totals and extremes, not the latest value.
+        readings.extend(
+            (f"P{index + 1}", float(temps[point.y, point.x]))
+            for index, point in enumerate(points)
+        )
+        for name, value in readings:
+            self._writer.writerow(
+                (stamp, name, self.measurement, f"{value:.2f}")
+            )
+        # Flush per frame so a kill or crash does not lose the tail.
+        self._file.flush()
+
+    def close(self) -> None:
+        self._file.close()
+
+
+def status(message: str) -> None:
+    """Write a progress line to stderr.
+
+    Informational output goes to stderr so that stdout is reserved for data
+    records (for example the CSV stream written by ``--csv``). Redirecting or
+    piping stdout then yields only the measurements.
+    """
+    print(message, file=sys.stderr)
+
+
 def apply_gain(mode: str) -> int:
     """Set the camera's gain. Returns 0 on success.
 
@@ -322,7 +381,7 @@ def apply_gain(mode: str) -> int:
         )
         return 1
 
-    print(f"gain: {'high' if cam.get_gain_select() else 'low'}")
+    status(f"gain: {'high' if cam.get_gain_select() else 'low'}")
     return 0
 
 
@@ -339,6 +398,9 @@ def main() -> int:
                          "window")
     ap.add_argument("--no-window", action="store_true",
                     help="do not open a display window")
+    ap.add_argument("--csv", default=None, metavar="PATH",
+                    help="log every measurement to PATH as CSV: timestamp, "
+                         "name (min/max/center/P1..), frame number and value")
     ap.add_argument("--scale", type=int, default=3, help="integer upscale factor")
     ap.add_argument("--font-size", type=int, default=DEFAULT_FONT_SIZE, metavar="PX",
                     help="label font size in pixels (default: %(default)s)")
@@ -409,6 +471,8 @@ def main() -> int:
     )
     out_w, out_h = renderer.out_w, renderer.out_h
 
+    logger = CsvLogger(args.csv) if args.csv else None
+
     class Producer:
         """Pull one annotated frame; shared by the window and the sink loop."""
 
@@ -426,10 +490,16 @@ def main() -> int:
             if emissivity is not None:
                 temps = correct_celsius(temps, emissivity, reflected_temp)
 
-            rgb = renderer.render(temps, frame_stats(temps))
+            stats = frame_stats(temps)
+            rgb = renderer.render(temps, stats)
             if sink is not None:
                 # loopback expects packed BGR
                 sink.write(rgb[:, :, ::-1])
+            if logger is not None:
+                # Points only exist when a window is running; without one the
+                # log still carries the min/max/centre readings.
+                points = window.points if window is not None else ()
+                logger.log(stats, points, temps)
             self.frames += 1
             if args.frames and self.frames >= args.frames:
                 self.done = True
@@ -439,20 +509,20 @@ def main() -> int:
     window = None
     try:
         cam.open()
-        print(f"capture {cam_path} via {args.backend} (stride {cam.stride})")
+        status(f"capture {cam_path} via {args.backend} (stride {cam.stride})")
         if emissivity is None:
-            print("temperatures: as reported by the camera (no correction)")
+            status("temperatures: as reported by the camera (no correction)")
         else:
-            print(
+            status(
                 f"temperatures: grey-body corrected, emissivity "
                 f"{emissivity:.4f}, reflected {reflected_temp:.1f} K"
             )
 
         if sink is not None:
             sink.open(out_w, out_h)
-            print(f"output  {out_path}: {out_w}x{out_h} BGR3")
+            status(f"output  {out_path}: {out_w}x{out_h} BGR3")
         else:
-            print("output  window only (no loopback)")
+            status("output  window only (no loopback)")
 
         if use_window:
             try:
@@ -472,7 +542,7 @@ def main() -> int:
             # The window's Qt event loop drives capture.
             window.run(producer)
             if window.interrupted:
-                print("\ninterrupted")
+                status("\ninterrupted")
         else:
             # Headless: pump frames ourselves at the camera's own rate.
             # grab() returns None once the producer is done or the camera
@@ -481,10 +551,10 @@ def main() -> int:
                 pass
 
         if args.frames:
-            print(f"done after {producer.frames} frames")
+            status(f"done after {producer.frames} frames")
 
     except KeyboardInterrupt:
-        print("\ninterrupted")
+        status("\ninterrupted")
     except DisplayError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -494,6 +564,8 @@ def main() -> int:
             sink.close()
         if window is not None:
             window.close()
+        if logger is not None:
+            logger.close()
     return 0
 
 

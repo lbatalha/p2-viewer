@@ -12,6 +12,7 @@ camera.
 from __future__ import annotations
 
 import signal
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -755,7 +756,8 @@ class Window:
         stamp = time.strftime("%Y%m%d-%H%M%S")
         path = Path(f"p2pro-{stamp}.png").resolve()
         Image.fromarray(self._frame.rgb).save(path)
-        print(f"saved {path}")
+        # stderr keeps stdout free for data records (see the --csv option).
+        print(f"saved {path}", file=sys.stderr)
 
     # -- frames --------------------------------------------------------------
     def _set_frame(self, frame: Frame) -> None:
@@ -805,6 +807,11 @@ class Window:
     @property
     def closed(self) -> bool:
         return self._closed
+
+    @property
+    def points(self) -> list[SamplePoint]:
+        """The sample points being tracked, in P1..Pn order."""
+        return self._points
 
     def close(self) -> None:
         self._closed = True

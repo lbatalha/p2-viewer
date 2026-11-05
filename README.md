@@ -126,6 +126,37 @@ reliably target a loopback device.
 | `--reflected-temp K` | Background temperature for that correction, in kelvin, or `auto` (default `300`) |
 | `--gain {high,low}` | Set the camera's measurement range. Off by default; needs USB write access |
 | `--frames N` | Stop after N frames (0 = run forever) |
+| `--csv PATH` | Write every measurement to `PATH` as CSV, one row per value per frame; an existing file is overwritten |
+
+### Logging to CSV
+
+`--csv PATH` writes one row per measurement, so a few minutes of recording
+can be loaded straight into a spreadsheet or `pandas`:
+
+```
+timestamp,name,measurement,value
+2026-11-05T20:38:33.614+00:00,min,1,21.98
+2026-11-05T20:38:33.614+00:00,max,1,32.54
+2026-11-05T20:38:33.614+00:00,center,1,22.85
+2026-11-05T20:38:33.648+00:00,min,2,21.98
+```
+
+| Column | Meaning |
+| ------ | ------- |
+| `timestamp` | ISO 8601 with a UTC offset and milliseconds |
+| `name` | `min`, `max`, `center`, or a sample point `P1`..`P4` |
+| `measurement` | Frame number, counted from 1; rows from one frame share it |
+| `value` | Temperature in Celsius |
+
+Values are always Celsius regardless of `--unit`, which only affects the
+on-screen labels. They are written after any `--emissivity` correction, so
+they match the numbers drawn on the image. `P1`..`Pn` rows appear only for points that are placed, and
+are numbered by their position in the table, so removing a point shifts the
+numbers of the ones after it. Points record the pixel under the marker, while
+`min`/`max`/`center` are per-frame readings.
+
+All progress messages go to stderr, so stdout carries only data. That check is
+cheap: piping stdout to a file gives an empty file during a normal run.
 
 ### In the window
 
