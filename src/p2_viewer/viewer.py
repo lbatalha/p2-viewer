@@ -7,6 +7,7 @@ import argparse
 import csv
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -297,27 +298,39 @@ def _resolve_setting(value: str, reader, name: str) -> float:
 
 
 class CsvLogger:
-    """Stream one measurement per line to a CSV file.
+    """Stream measurements to a CSV file at a fixed rate.
 
-    Each frame produces one row per tracked value: the frame's minimum,
-    maximum and centre readings plus one row for every sample point (``P1``,
-    ``P2``, ...). Columns are timestamp, name, measurement number and value.
+    Each sample produces one row per tracked value: the minimum, maximum and
+    centre readings plus one row for every sample point (``P1``, ``P2``, ...).
+    Columns are timestamp, name, measurement number and value.
 
-    The measurement number counts frames, so rows from the same frame share
-    it and the numbers never repeat -- that makes the output easy to pivot
-    or diff even while points are added and removed.
+    ``log`` is called for every frame but only writes once the interval has
+    elapsed, so the file grows at a predictable size instead of at the
+    camera's frame rate. The value written is the most recent frame's reading
+    rather than an average, so it matches what the overlay showed. The
+    measurement number counts samples (not frames), so rows from one sample
+    share it and the numbers never repeat.
     """
 
     COLUMNS = ("timestamp", "name", "measurement", "value")
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, interval: float = 1.0) -> None:
         self._file = open(path, "w", newline="", encoding="utf-8")
         self._writer = csv.writer(self._file)
         self._writer.writerow(self.COLUMNS)
+        self._interval = interval
+        self._last_written: float | None = None
         self.measurement = 0
 
     def log(self, stats: FrameStats, points, temps: np.ndarray) -> None:
-        """Record this frame's readings for the extremes and each point."""
+        """Record this frame's readings, unless the interval has not elapsed."""
+        now = time.monotonic()
+        if (
+            self._last_written is not None
+            and now - self._last_written < self._interval
+        ):
+            return
+        self._last_written = now
         self.measurement += 1
         # ISO 8601 with a UTC offset, so merged logs stay unambiguous.
         stamp = datetime.now().astimezone().isoformat(timespec="milliseconds")
@@ -336,7 +349,7 @@ class CsvLogger:
             self._writer.writerow(
                 (stamp, name, self.measurement, f"{value:.2f}")
             )
-        # Flush per frame so a kill or crash does not lose the tail.
+        # Flush per sample so a kill or crash does not lose the tail.
         self._file.flush()
 
     def close(self) -> None:
