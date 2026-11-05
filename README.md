@@ -111,7 +111,6 @@ reliably target a loopback device.
 | `--unit {C,F,K}` | Temperature unit for labels (default `C`) |
 | `--scale N` | Integer upscale factor (default `3`, so 256x192 becomes 768x576) |
 | `--font NAME` | Font family or file path (default `monospace`, resolved via `fc-match`) |
-| `--qt-platform NAME` | Force a Qt platform plugin (`wayland`, `xcb`, `offscreen`) |
 | `--frames N` | Stop after N frames (0 = run forever) |
 
 The window shows the frame with a centre crosshair, markers on the coldest and

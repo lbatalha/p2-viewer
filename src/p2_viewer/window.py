@@ -4,7 +4,6 @@ PySide6 provides native Wayland support, avoiding XWayland on Wayland desktops."
 
 from __future__ import annotations
 
-import os
 import signal
 from typing import Protocol
 
@@ -68,7 +67,6 @@ class Window:
     def __init__(
         self,
         title: str = "P2 Pro",
-        platform: str | None = None,
     ) -> None:
         if QApplication is None:
             raise DisplayError(
@@ -76,7 +74,6 @@ class Window:
                 "(`uv sync --extra qt`) or run with --no-window"
             )
         self.title = title
-        self.platform = platform
         self.app = None
         self._label = None
         self._timer = None
@@ -87,9 +84,6 @@ class Window:
 
     # -- lifecycle -----------------------------------------------------------
     def open(self, width: int, height: int) -> None:
-        # QT_QPA_PLATFORM must be set before QApplication is constructed.
-        if self.platform:
-            os.environ["QT_QPA_PLATFORM"] = self.platform
         try:
             self.app = QApplication.instance() or QApplication([])
         except Exception as exc:  # noqa: BLE001 - Qt raises assorted types

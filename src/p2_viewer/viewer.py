@@ -246,9 +246,6 @@ def main() -> int:
                     help="do not open a display window")
     ap.add_argument("--no-sink", action="store_true",
                     help="do not publish to a v4l2loopback device")
-    ap.add_argument("--qt-platform", default=None, metavar="NAME",
-                    help="force a Qt platform plugin, e.g. wayland, xcb, "
-                         "offscreen (default: Qt auto-detects)")
     ap.add_argument("--scale", type=int, default=3, help="integer upscale factor")
     ap.add_argument("--font", default="monospace",
                     help="font family name or path (default: monospace, "
@@ -316,9 +313,7 @@ def main() -> int:
 
         if use_window:
             try:
-                window = Window(
-                    f"P2 Pro {out_w}x{out_h}", platform=args.qt_platform
-                )
+                window = Window(f"P2 Pro {out_w}x{out_h}")
                 window.open(out_w, out_h)
             except DisplayError as exc:
                 # A missing display should not kill a sink-only pipeline.
