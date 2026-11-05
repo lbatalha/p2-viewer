@@ -9,12 +9,11 @@ import struct
 
 import numpy as np
 
-from .frame import FRAME_HEIGHT, FRAME_STRIDE, FRAME_WIDTH
+from .frame import FRAME_HEIGHT, FRAME_WIDTH
 
 # --- V4L2 ioctl numbers -------------------------------------------------------
-VIDIOC_QUERYCAP = 0x80685600
 VIDIOC_G_FMT = 0xC0D05604
-VIDIOC_S_FMT = 0xC0D05604
+VIDIOC_S_FMT = 0xC0D05605
 VIDIOC_REQBUFS = 0xC0145608
 VIDIOC_QUERYBUF = 0xC0585609
 VIDIOC_QBUF = 0xC058560F
@@ -43,11 +42,6 @@ BUF_STRUCT_SIZE = 88
 def fourcc(code: str) -> int:
     """'YUYV' -> the little-endian int V4L2 expects."""
     return struct.unpack("<I", code.encode("ascii"))[0]
-
-
-def fourcc_str(code: int) -> str:
-    """Inverse of :func:`fourcc`."""
-    return struct.pack("<I", code).decode("ascii", "replace")
 
 
 class _V4L2Device:
@@ -82,20 +76,8 @@ class _V4L2Device:
     def _open(self) -> None:
         self.fd = os.open(self.path, os.O_RDWR)
 
-    def query_caps(self) -> dict:
-        buf = bytearray(104)
-        self._ioctl(VIDIOC_QUERYCAP, buf, "QUERYCAP")
-        driver, card, bus = struct.unpack_from("<16s32s32s", buf, 0)
-        caps, device_caps = struct.unpack_from("<II", buf, 84)
-        return {
-            "driver": driver.rstrip(b"\0").decode("utf-8", "replace"),
-            "card": card.rstrip(b"\0").decode("utf-8", "replace"),
-            "bus": bus.rstrip(b"\0").decode("utf-8", "replace"),
-            "caps": caps,
-            "device_caps": device_caps,
-        }
-
     def set_format(self, width: int, height: int, pixfmt: str) -> None:
+        """Request a capture format, then verify what the driver granted."""
         buf = bytearray(FMT_STRUCT_SIZE)
         struct.pack_into("<I", buf, 0, self.buf_type)
         struct.pack_into(
@@ -106,6 +88,11 @@ class _V4L2Device:
         )
         self._ioctl(VIDIOC_S_FMT, buf, "S_FMT")
         self._parse_fmt(buf)
+        if (self.width, self.height) != (width, height):
+            raise RuntimeError(
+                f"{self.path}: driver granted {self.width}x{self.height}, "
+                f"asked for {width}x{height}"
+            )
 
     def _parse_fmt(self, buf: bytearray) -> None:
         (self.width, self.height, self.pixfmt,
@@ -228,6 +215,4 @@ __all__ = [
     "V4L2Capture",
     "V4L2Sink",
     "fourcc",
-    "fourcc_str",
-    "FRAME_STRIDE",
 ]

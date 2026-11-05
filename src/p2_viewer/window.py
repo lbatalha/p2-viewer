@@ -20,7 +20,7 @@ class DisplayError(RuntimeError):
 
 
 class FrameProducer(Protocol):
-    def grab(self) -> "object | None": ...
+    def grab(self): ...
 
 
 class _AspectLabel(QLabel):

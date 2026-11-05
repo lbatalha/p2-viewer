@@ -111,19 +111,81 @@ reliably target a loopback device.
 | `--unit {C,F,K}` | Temperature unit for labels (default `C`) |
 | `--scale N` | Integer upscale factor (default `3`, so 256x192 becomes 768x576) |
 | `--font NAME` | Font family or file path (default `monospace`, resolved via `fc-match`) |
+| `--emissivity VALUE` | Apply a grey-body emissivity correction: a number 0-1, or `auto` to use the camera's own setting |
+| `--reflected-temp K` | Background temperature for that correction, in kelvin, or `auto` (default `300`) |
+| `--gain {high,low}` | Set the camera's measurement range. Off by default; needs USB write access |
 | `--frames N` | Stop after N frames (0 = run forever) |
 
 The window shows the frame with a centre crosshair, markers on the coldest and
-hottest pixels, and a colour scale. Press `Escape` or close the window to quit;
-`Ctrl-C` works too.
+hottest pixels, and a colour scale. Press `Escape` or close the window to
+quit; `Ctrl-C` works too.
+
+## Camera settings
+
+The camera accepts vendor commands over USB for palette, emissivity, object
+distance, atmospheric and reflected temperature, transmittance and gain. A
+small CLI is included:
+
+```sh
+uv sync --extra usb
+uv run p2-viewer-vendor info          # firmware, sensor, serial number
+uv run p2-viewer-vendor show          # current settings
+uv run p2-viewer-vendor palette --set 11
+uv run p2-viewer-vendor emissivity --set 0.95
+```
+
+This needs access to the USB device node, which normally means a udev rule:
+
+```
+# /etc/udev/rules.d/60-p2pro.rules
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="5830", MODE="0666"
+```
+
+Then `sudo udevadm control --reload-rules`.
 
 ## Notes on accuracy
 
 Temperatures are the camera's own radiometric output converted with
-`kelvin = raw / 64`. No emissivity, distance or atmospheric correction is
-applied. The camera appears to factor in its configured emissivity (default
-0.95) internally, so results are close to the vendor app's defaults, but they
-have not been verified against a calibrated reference.
+`kelvin = raw / 64`.
+
+**The camera's own settings have no practical effect.** Changing the
+emissivity, object distance, reflected temperature, atmospheric temperature
+or transmittance does not change the values in the video stream. They are
+the apparent scene temperature, as if every surface were a black body, so
+any correction has to be done in software.
+
+That is accurate for high-emissivity surfaces such as skin or matte paint,
+and badly wrong for shiny metal or glass, which reflect their surroundings
+instead of radiating heat.
+
+### Measurement range
+
+The camera has two gain settings. **High gain** (the default) is more
+sensitive but saturates at about 183 C. **Low gain** reaches much further -
+the same target measured around 437 C in low gain while high gain pinned it
+at 183 C. Which one you want depends on what you are pointing at:
+
+```sh
+uv run p2-viewer --gain low
+```
+
+The viewer never changes this unless asked, so it does not need write access
+to the USB device by default. If you need the corrected value, pass an
+emissivity and the viewer will apply a grey-body correction:
+
+```sh
+uv run p2-viewer --emissivity 0.95 --reflected-temp 294
+uv run p2-viewer --emissivity auto --reflected-temp auto
+```
+
+`auto` reads the values back from the camera, so if the app has written an
+emissivity into it, the viewer follows along automatically. The viewer prints
+the values it is using at startup.
+
+The correction is off by default, so the viewer shows exactly what the
+camera reports. Whether the vendor app applies the same correction has not
+been established; comparing the two on the same target is the way to find
+out.
 
 ## How the camera protocol works
 

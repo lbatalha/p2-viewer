@@ -44,8 +44,8 @@ def open_capture(backend: str, path: str) -> CaptureSource:
     raise ValueError(f"unknown backend {backend!r}; available: {', '.join(BACKENDS)}")
 
 
-def open_sink(backend: str, path: str) -> FrameSink:
-    """Instantiate a sink backend by name.
+def open_sink(path: str) -> FrameSink:
+    """Instantiate the output sink.
 
     Only V4L2 output is implemented: it is the sole reliable way to publish
     frames to a loopback device on Linux.

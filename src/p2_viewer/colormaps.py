@@ -1,5 +1,10 @@
-"""False-colour palettes, defined as (position, rgb) stops interpolated to a
-256-entry LUT. Palette names follow thermal-imaging convention."""
+"""False-colour palettes the viewer renders itself.
+
+Each palette is a list of (position, rgb) stops interpolated to a 256-entry
+LUT. These are entirely ours: the camera also has its own preview palettes
+(see ``p2_viewer.vendor``), but those only affect the camera's built-in
+preview image, which the viewer does not display, so they are a separate,
+mostly-useless knob."""
 
 from __future__ import annotations
 

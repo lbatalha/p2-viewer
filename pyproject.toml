@@ -19,13 +19,17 @@ opencv = [
 qt = [
     "pyside6-essentials>=6.12",
 ]
+usb = [
+    "pyusb>=1.3.1",
+]
 # Everything needed for the default experience: native window + both backends.
 all = [
-    "p2-viewer[opencv,qt]",
+    "p2-viewer[opencv,qt,usb]",
 ]
 
 [project.scripts]
 p2-viewer = "p2_viewer:main"
+p2-viewer-vendor = "p2_viewer.vendor_cli:main"
 
 [build-system]
 requires = ["uv_build>=0.13.7,<0.14.0"]

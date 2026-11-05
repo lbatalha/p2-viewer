@@ -12,6 +12,8 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from . import backend, colormaps
+from .calibration import DEFAULT_REFLECTED_TEMPERATURE, correct_celsius
+from .device import find_camera
 from .frame import CAM_HEIGHT, CAM_WIDTH, FrameStats, decode_radiometric, frame_stats
 from .window import DisplayError, Window
 
@@ -198,6 +200,7 @@ class Renderer:
                       fill=colour, width=1)
             draw.text((tx, ty), label, fill=colour, font=self.font_small,
                       stroke_width=2, stroke_fill=(0, 0, 0))
+
         return np.asarray(im, dtype=np.uint8)
 
     def _draw_legend(self, im, draw, stats: FrameStats) -> None:
@@ -233,12 +236,61 @@ class Renderer:
 
 
 # --- Main ---------------------------------------------------------------------
+def _resolve_setting(value: str, reader, name: str) -> float:
+    """Resolve a numeric setting that may be the literal "auto".
+
+    "auto" asks the camera for its current value; anything else is a number.
+    """
+    if value.strip().lower() != "auto":
+        return float(value)
+    try:
+        from .vendor import VendorControl
+    except ImportError:
+        raise SystemExit(
+            f"error: --{name} auto needs the usb extra (uv sync --extra usb)"
+        )
+    return reader(VendorControl())
+
+
+def apply_gain(mode: str) -> int:
+    """Set the camera's gain. Returns 0 on success.
+
+    This is the only camera setting the viewer changes, and only when asked:
+    it needs write access to the USB device node (a udev rule), and switching
+    takes a couple of seconds while the camera recalibrates.
+    """
+    try:
+        from .vendor import VendorControl, VendorError
+    except ImportError:
+        print(
+            "error: --gain needs the usb extra (uv sync --extra usb)",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        cam = VendorControl()
+        cam.set_gain_select(mode == "high")
+    except VendorError as exc:
+        print(f"error: could not set gain: {exc}", file=sys.stderr)
+        print(
+            "       this needs write access to /dev/bus/usb/...; see the "
+            "udev rule in the README",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"gain: {'high' if cam.get_gain_select() else 'low'}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Stream annotated thermal video from an InfiRay P2 Pro "
                     "to a v4l2loopback device.",
     )
-    ap.add_argument("--cam", default="/dev/video4", help="P2 Pro capture node")
+    ap.add_argument("--cam", default=None,
+                    help="P2 Pro capture node (default: auto-detect)")
     ap.add_argument("--out", default=None,
                     help="v4l2loopback node to publish to "
                          "(default: /dev/video1)")
@@ -256,6 +308,22 @@ def main() -> int:
     ap.add_argument("--unit", default=DEFAULT_UNIT, choices=list(UNITS),
                     help="temperature unit for labels: C, F or K "
                          "(default: %(default)s)")
+    ap.add_argument("--emissivity", default=None, metavar="VALUE",
+                    help="apply a grey-body emissivity correction: a number "
+                         "from 0 to 1, or 'auto' to use the camera's own "
+                         "setting. The camera's own settings have no "
+                         "practical effect, so use this to correct readings "
+                         "yourself or to match an app that does")
+    ap.add_argument("--reflected-temp", default=str(DEFAULT_REFLECTED_TEMPERATURE),
+                    metavar="KELVIN",
+                    help="background temperature for the correction, in "
+                         "kelvin, or 'auto' to use the camera's own setting "
+                         "(default: %(default)s)")
+    ap.add_argument("--gain", default=None, choices=("high", "low"),
+                    help="set the camera's measurement range: high gain for "
+                         "sensitive readings up to about 183 C, low gain to "
+                         "reach further. Off by default: the camera keeps "
+                         "whatever it has, so no USB write access is needed")
     ap.add_argument("--backend", default=backend.DEFAULT_BACKEND,
                     choices=backend.BACKENDS,
                     help="capture backend (default: %(default)s)")
@@ -270,8 +338,31 @@ def main() -> int:
     if not use_sink and not use_window:
         ap.error("--no-sink and --no-window together leave no output")
 
-    cam = backend.open_capture(args.backend, args.cam)
-    sink = backend.open_sink(args.backend, out_path) if use_sink else None
+    cam_path = args.cam or find_camera()
+    if cam_path is None:
+        print("error: no P2 Pro found; pass --cam", file=sys.stderr)
+        return 1
+    emissivity = None
+    reflected_temp = DEFAULT_REFLECTED_TEMPERATURE
+    if args.emissivity is not None:
+        emissivity = _resolve_setting(
+            args.emissivity, lambda cam: cam.get_emissivity(), "emissivity"
+        )
+        reflected_temp = _resolve_setting(
+            args.reflected_temp,
+            lambda cam: cam.get_reflected_temperature(),
+            "reflected-temp",
+        )
+        if not 0 < emissivity <= 1:
+            print("error: emissivity must be between 0 and 1", file=sys.stderr)
+            return 1
+
+    if args.gain is not None:
+        if apply_gain(args.gain) != 0:
+            return 1
+
+    cam = backend.open_capture(args.backend, cam_path)
+    sink = backend.open_sink(out_path) if use_sink else None
 
     renderer = Renderer(args.scale, args.font, args.palette, args.unit)
     out_w, out_h = renderer.out_w, renderer.out_h
@@ -290,6 +381,9 @@ def main() -> int:
             if buf is None:
                 return None
             temps = decode_radiometric(buf, cam.stride)
+            if emissivity is not None:
+                temps = correct_celsius(temps, emissivity, reflected_temp)
+
             rgb = renderer.render(temps, frame_stats(temps))
             if sink is not None:
                 # loopback expects packed BGR
@@ -303,7 +397,14 @@ def main() -> int:
     window = None
     try:
         cam.open()
-        print(f"capture {args.cam} via {args.backend} (stride {cam.stride})")
+        print(f"capture {cam_path} via {args.backend} (stride {cam.stride})")
+        if emissivity is None:
+            print("temperatures: as reported by the camera (no correction)")
+        else:
+            print(
+                f"temperatures: grey-body corrected, emissivity "
+                f"{emissivity:.4f}, reflected {reflected_temp:.1f} K"
+            )
 
         if sink is not None:
             sink.open(out_w, out_h)
@@ -329,11 +430,10 @@ def main() -> int:
                 print("\ninterrupted")
         else:
             # Headless: pump frames ourselves at the camera's own rate.
-            while not producer.done:
-                if producer.grab() is None:
-                    break
-                if producer.done:
-                    break
+            # grab() returns None once the producer is done or the camera
+            # stops delivering frames, so that is the only exit we need.
+            while producer.grab() is not None:
+                pass
 
         if args.frames:
             print(f"done after {producer.frames} frames")
