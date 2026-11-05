@@ -237,15 +237,3 @@ which works out to roughly 22–25 °C.
 
 Because every pixel has a real temperature, the viewer can take the minimum,
 maximum and the pixel at the centre of the frame, and label them directly.
-
-### What is not covered here
-
-The camera also accepts vendor control commands over USB (endpoint 0) for
-things like palette selection, emissivity, object distance and measurement
-range. This viewer does not use them: it reads the default configuration and
-only touches the video stream, so no special permissions or udev rules are
-needed.
-
-## License
-
-MIT. See [LICENSE](LICENSE).

@@ -25,6 +25,9 @@ UNITS = {
 DEFAULT_UNIT = "C"
 
 
+#: Outline drawn around label text, so it stays readable over any colour.
+LABEL_STROKE = 2
+
 # --- Rendering ----------------------------------------------------------------
 # Markers are colour-coded: red = hottest, blue = coldest, green = centre.
 
@@ -132,9 +135,12 @@ class Renderer:
         ]
         best = None
         best_score = None
+        # The labels are drawn with a 2px outline, which extends past the
+        # glyph box, so keep the whole outline inside the frame.
+        inset = LABEL_STROKE + 1
         for cx_, cy_ in candidates:
-            x = min(max(cx_, 2), self.out_w - tw - 2)
-            y = min(max(cy_, 2), self.out_h - th - 2)
+            x = min(max(cx_, inset), self.out_w - tw - inset)
+            y = min(max(cy_, inset), self.out_h - th - inset)
             box = (x - 2, y - 2, x + tw + 2, y + th + 2)
             score = sum(_overlap(box, o) for o in obstacles)
             if score == 0:
@@ -170,7 +176,7 @@ class Renderer:
         cx_t, cy_t, _ = self._pick_label_pos(cx + 12, cy, csize, obstacles)
         draw.text(
             (cx_t, cy_t - 3), centre_text, fill=centre_colour, font=self.font,
-            stroke_width=2, stroke_fill=(0, 0, 0),
+            stroke_width=LABEL_STROKE, stroke_fill=(0, 0, 0),
         )
         obstacles.append(
             (cx_t - 2, cy_t - 5, cx_t + csize[0] + 2, cy_t + csize[1] + 1)
@@ -198,7 +204,7 @@ class Renderer:
             draw.line([(px, py), (tx if tx > px else tx + size[0], ty + size[1] // 2)],
                       fill=colour, width=1)
             draw.text((tx, ty), label, fill=colour, font=self.font_small,
-                      stroke_width=2, stroke_fill=(0, 0, 0))
+                      stroke_width=LABEL_STROKE, stroke_fill=(0, 0, 0))
 
         return np.asarray(im, dtype=np.uint8)
 
@@ -224,14 +230,14 @@ class Renderer:
             tw, th = self._text_size(text, tick_font)
             ty = min(max(tick_y - th // 2, 0), self.out_h - th - 1)
             draw.text((label_x, ty), text, fill=(255, 255, 255), font=tick_font,
-                      stroke_width=2, stroke_fill=(0, 0, 0))
+                      stroke_width=LABEL_STROKE, stroke_fill=(0, 0, 0))
 
         # unit caption, centred over the bar itself
         cap = UNITS[self.unit][2]
         cw, ch = self._text_size(cap, tick_font)
         bar_centre = bx + bw // 2
         draw.text((bar_centre - cw // 2, by - ch - 5), cap, fill=(200, 200, 200),
-                  font=tick_font, stroke_width=2, stroke_fill=(0, 0, 0))
+                  font=tick_font, stroke_width=LABEL_STROKE, stroke_fill=(0, 0, 0))
 
 
 # --- Main ---------------------------------------------------------------------
