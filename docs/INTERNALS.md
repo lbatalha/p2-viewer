@@ -76,7 +76,7 @@ Eight bytes, sent to `0x1D00` or `0x9D00`:
 | 2 | 4 | parameter | little endian |
 | 6 | 2 | payload length | **big endian** |
 
-The mixed byte order is real, not a typo.
+The mixed byte order is intentional.
 
 ### The three transports
 
@@ -145,17 +145,10 @@ default.
 | 9-10 | rainbow 4-5 |
 | 11 | black hot |
 
-Two different palette concepts share the same word and are easy to confuse:
-
-- **This command** sets the camera's *own* preview palette, which only changes
-  the bitmap in the top half of the frame. The viewer ignores that half and
-  draws the radiometric data itself, so this knob has no visible effect.
-- **The viewer's palettes** (the `colormaps` module) are colour ramps the
-  software applies to the temperature values. Those are not sent to the
-  camera at all.
-
-If it matters to you that the camera's built-in preview uses a particular
-palette, set it here; otherwise this command can be ignored.
+This command sets the camera's *own* preview palette, which only changes the
+bitmap in the top half of the frame. The viewer ignores that half and applies
+its own colour ramp to the radiometric data, so this knob has no visible
+effect; set it only if you care what the camera's built-in preview looks like.
 
 ### Temperature measurement parameters (`0x8514`)
 
@@ -186,26 +179,11 @@ So the stream carries the **apparent** temperature, treating every surface
 as if it were a black body. Correcting for a real surface has to happen in
 software, which is what `p2_viewer.calibration` does.
 
-How much that matters depends on the surface:
-
-| Emissivity | Example | Error if uncorrected |
-| ---------- | ------- | -------------------- |
-| 0.98 | skin | 0.2 C |
-| 0.95 | matte paint | 0.5 C |
-| 0.50 | plastic | 2 C |
-| 0.05 | shiny metal | 9 C |
-
 ### Gain selects the measurement range
 
-Gain does not change the values, only where the sensor saturates. High gain
-is more sensitive and pins a hot target at 183.10 C; the same target reads
-about 437 C in low gain. A gain switch takes about 2.6 s, during which the
-status byte reads busy.
-
-### Calibration is continuous
-
-The camera corrects its own non-uniformity continuously, without introducing
-visible steps in the stream. There is no manual trigger.
+Gain does not change the values, only where the sensor saturates: high gain is
+more sensitive and saturates at about 183 C, low gain reaches at least 437 C.
+A gain switch takes about 2.6 s, during which the status byte reads busy.
 
 ## 5. Safety notes
 
@@ -218,17 +196,15 @@ Control transfers work regardless, as long as the process can open
 ### Unknown command codes wedge the camera
 
 An unrecognised code makes the camera answer `Unrecognized command!` and then
-stay permanently busy. Neither a USB unbind/bind, an `authorized` toggle nor
-an interface rebind clears it; only a power cycle does. The video stream
+stay permanently busy until the camera is power cycled. The video stream
 keeps working throughout. This is why `VendorControl` refuses codes outside
 its allowlist.
 
 ### Preview commands are destructive
 
 `preview_stop` (`0x020F`) halts the radiometric pipeline. Afterwards the
-temperature half of every frame reads a constant `0x8000` (238.85 C), and
-neither `preview_start`, `y16_preview_start`, a USB port reset nor an
-interface rebind restores it; only a power cycle does. Do not send them.
+temperature half of every frame reads a constant `0x8000` (238.85 C) until
+the camera is power cycled. Do not send it.
 
 ## 6. Talking to the camera manually
 
@@ -322,7 +298,3 @@ print("restored:", int.from_bytes(read_long(0x8514, 3), "big") / 129)
 
 A standard write without a payload is just a header to `0x1D00` followed by
 `ready()`, which is how the palette and the preview commands are sent.
-
-Two things to be careful about: send only codes you know exist, since an
-unknown one wedges the command channel until the camera is power cycled, and
-allow several seconds for the gain switch.
