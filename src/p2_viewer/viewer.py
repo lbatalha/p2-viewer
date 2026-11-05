@@ -13,7 +13,6 @@ from PIL import Image, ImageDraw, ImageFont
 
 from . import backend, colormaps
 from .calibration import DEFAULT_REFLECTED_TEMPERATURE, correct_celsius
-from .device import find_camera
 from .frame import CAM_HEIGHT, CAM_WIDTH, FrameStats, decode_radiometric, frame_stats
 from .window import DisplayError, Window
 
@@ -289,15 +288,14 @@ def main() -> int:
         description="Stream annotated thermal video from an InfiRay P2 Pro "
                     "to a v4l2loopback device.",
     )
-    ap.add_argument("--cam", default=None,
-                    help="P2 Pro capture node (default: auto-detect)")
-    ap.add_argument("--out", default=None,
-                    help="v4l2loopback node to publish to "
-                         "(default: /dev/video1)")
+    ap.add_argument("--cam", required=True, metavar="PATH",
+                    help="P2 Pro capture node, for example /dev/video4")
+    ap.add_argument("--out", default=None, metavar="PATH",
+                    help="v4l2loopback node to publish to, for example "
+                         "/dev/video1. Without this the viewer only shows a "
+                         "window")
     ap.add_argument("--no-window", action="store_true",
                     help="do not open a display window")
-    ap.add_argument("--no-sink", action="store_true",
-                    help="do not publish to a v4l2loopback device")
     ap.add_argument("--scale", type=int, default=3, help="integer upscale factor")
     ap.add_argument("--font", default="monospace",
                     help="font family name or path (default: monospace, "
@@ -330,18 +328,15 @@ def main() -> int:
     ap.add_argument("--frames", type=int, default=0, help="0 = run forever")
     args = ap.parse_args()
 
-    # Decide the outputs: by default both a window and the loopback sink.
-    # Window is on by default; --no-window and --no-sink turn the ends off.
-    use_sink = not args.no_sink
+    # The window is the default output; publishing to a loopback device is
+    # opt-in, so nothing is written anywhere unless --out names a device.
     use_window = not args.no_window
-    out_path = args.out or "/dev/video1"
-    if not use_sink and not use_window:
-        ap.error("--no-sink and --no-window together leave no output")
+    use_sink = args.out is not None
+    out_path = args.out
+    if not use_window and not use_sink:
+        ap.error("--no-window without --out leaves no output")
 
-    cam_path = args.cam or find_camera()
-    if cam_path is None:
-        print("error: no P2 Pro found; pass --cam", file=sys.stderr)
-        return 1
+    cam_path = args.cam
     emissivity = None
     reflected_temp = DEFAULT_REFLECTED_TEMPERATURE
     if args.emissivity is not None:

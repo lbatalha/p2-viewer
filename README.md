@@ -49,10 +49,12 @@ sudo modprobe v4l2loopback video_nr=0,1,8 \
     card_label="obs-virtual-camera,thermal" devices=2
 ```
 
-Then point the viewer at it (`--out /dev/video8` in the example above):
+Then point the viewer at it (`--out /dev/video8` in the example above), and
+at the camera node (`--cam /dev/video4` here; use whichever node
+`v4l2-ctl --list-devices` reports):
 
 ```sh
-uv run p2-viewer --out /dev/video8
+uv run p2-viewer --cam /dev/video4 --out /dev/video8
 ```
 
 Consume it with anything that reads V4L2:
@@ -66,25 +68,33 @@ device only advertises a capture format while something is writing to it.
 
 ## Usage
 
+`--cam` is required: the viewer does not guess which node the camera is on.
+Find it with `v4l2-ctl --list-devices`; it is the one whose card is a USB
+Camera and which offers a 256x384 mode.
+
 ```sh
-uv run p2-viewer                      # window + virtual camera
-uv run p2-viewer --no-sink            # window only
-uv run p2-viewer --no-window          # virtual camera only (headless)
-uv run p2-viewer --palette rainbow    # different colour map
-uv run p2-viewer --unit F             # Fahrenheit
+uv run p2-viewer --cam /dev/video4                               # window only
+uv run p2-viewer --cam /dev/video4 --out /dev/video1             # window + virtual camera
+uv run p2-viewer --cam /dev/video4 --out /dev/video1 --no-window # headless
+uv run p2-viewer --cam /dev/video4 --palette rainbow
+uv run p2-viewer --cam /dev/video4 --unit F
 ```
 
 ### Output modes
 
-| Flags            | Behaviour                              |
-| ---------------- | -------------------------------------- |
-| *(none)*         | Window **and** publish to `--out`      |
-| `--no-window`    | Publish only; safe over SSH            |
-| `--no-sink`      | Window only; no virtual camera         |
-| both             | Error, since nothing would be produced |
+Showing a window is the default. Publishing to a virtual camera is opt-in, so
+nothing is written to a device unless you name one with `--out`.
+
+| Flags | Behaviour |
+| ----- | --------- |
+| `--cam` | Window only |
+| `--cam --out` | Window **and** publish to `--out` |
+| `--cam --out --no-window` | Publish only; safe over SSH |
+| `--cam --no-window` | Error, since nothing would be produced |
 
 If the window cannot be opened (no display, or `qt` extra not installed) it
-prints a warning and carries on publishing to the virtual camera.
+prints a warning and carries on publishing to the virtual camera, or fails if
+there is no `--out` either.
 
 ### Capture backends
 
@@ -93,7 +103,8 @@ prints a warning and carries on publishing to the virtual camera.
 | `v4l2`   | `--backend v4l2`    | **Default.** Talks to the kernel directly (ioctl + mmap). Fastest, no extra dependencies, Linux only. |
 | `opencv` | `--backend opencv`  | Uses `cv2.VideoCapture`. Exists for portability — OpenCV is how the camera is reached on macOS and Windows, which have no V4L2. Slower and pulls in a large dependency, so it is not the default on Linux. |
 
-Both support `--cam` as either a device node (`/dev/video4`) or an index (`4`).
+The OpenCV backend also accepts a bare index (`--cam 4`) instead of a node
+path.
 
 The output side always uses the V4L2 writer: OpenCV's `VideoWriter` cannot
 reliably target a loopback device.
@@ -102,10 +113,9 @@ reliably target a loopback device.
 
 | Option | Description |
 | ------ | ----------- |
-| `--cam PATH` | Camera device (default `/dev/video4`) |
-| `--out PATH` | Loopback device (default `/dev/video1`) |
-| `--no-window` | Do not open a display window |
-| `--no-sink` | Do not publish to a loopback device |
+| `--cam PATH` | **Required.** Camera capture node, e.g. `/dev/video4` |
+| `--out PATH` | Loopback device to publish to, e.g. `/dev/video1`. Omit for a window only |
+| `--no-window` | Do not open a display window; needs `--out` |
 | `--backend {v4l2,opencv}` | Capture backend (default `v4l2`) |
 | `--palette NAME` | `ironbow` (default), `rainbow`, `whitehot`, `blackhot`, `hotmetal`, `arctic` |
 | `--unit {C,F,K}` | Temperature unit for labels (default `C`) |
