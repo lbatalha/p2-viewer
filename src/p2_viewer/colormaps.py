@@ -1,10 +1,10 @@
 """False-colour palettes the viewer renders itself.
 
 Each palette is a list of (position, rgb) stops interpolated to a 256-entry
-LUT. These are entirely ours: the camera also has its own preview palettes
-(see ``p2_viewer.vendor``), but those only affect the camera's built-in
-preview image, which the viewer does not display, so they are a separate,
-mostly-useless knob."""
+LUT. The camera also has preview palettes (see ``p2_viewer.vendor``); those
+change only the camera's built-in preview image, which the viewer does not
+display.
+"""
 
 from __future__ import annotations
 
@@ -69,9 +69,7 @@ def palette_names() -> list[str]:
 def build_lut(name: str = DEFAULT_PALETTE, size: int = LUT_SIZE) -> np.ndarray:
     """Build a ``(size, 3)`` uint8 lookup table for the named palette.
 
-    Stops are linearly interpolated per channel, which is enough for these
-    purpose-built ramps and keeps the result independent of any plotting
-    library.
+    Stops are linearly interpolated per channel.
     """
     try:
         stops = PALETTES[name]

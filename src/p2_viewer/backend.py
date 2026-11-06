@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import sys
 from typing import Protocol
 
 import numpy as np
+
+
+class BackendError(RuntimeError):
+    """Raised when a capture or output backend cannot be used."""
 
 
 class CaptureSource(Protocol):
@@ -27,16 +32,32 @@ class FrameSink(Protocol):
     def close(self) -> None: ...
 
 
-BACKENDS = ("v4l2", "opencv")
-DEFAULT_BACKEND = "v4l2"
+if sys.platform == "darwin":
+    BACKENDS = ("avfoundation", "opencv")
+    DEFAULT_BACKEND = "avfoundation"
+else:
+    BACKENDS = ("v4l2", "opencv")
+    DEFAULT_BACKEND = "v4l2"
 
 
 def open_capture(backend: str, path: str) -> CaptureSource:
     """Instantiate a capture backend by name."""
     if backend == "v4l2":
+        if sys.platform == "darwin":
+            raise BackendError(
+                "the v4l2 backend is Linux-only; use --backend avfoundation"
+            )
         from .v4l2 import V4L2Capture
 
         return V4L2Capture(path)
+    if backend == "avfoundation":
+        if sys.platform != "darwin":
+            raise BackendError(
+                "the avfoundation backend is macOS-only; use --backend v4l2"
+            )
+        from .avfoundation import AVFoundationCapture
+
+        return AVFoundationCapture(path)
     if backend == "opencv":
         from .opencv import OpenCVCapture
 
@@ -47,9 +68,18 @@ def open_capture(backend: str, path: str) -> CaptureSource:
 def open_sink(path: str) -> FrameSink:
     """Instantiate the output sink.
 
-    Only V4L2 output is implemented: it is the sole reliable way to publish
-    frames to a loopback device on Linux.
+    ``http://`` URLs serve MJPEG on the requested bind address.  Other
+    paths are V4L2 loopback devices, which only exist on Linux.
     """
+    if path.startswith("http://"):
+        from .mjpeg import MjpegSink
+
+        return MjpegSink(path)
+    if sys.platform == "darwin":
+        raise BackendError(
+            "on macOS, --out accepts an http:// URL; omit --out for window-only "
+            "mode"
+        )
     from .v4l2 import V4L2Sink
 
     return V4L2Sink(path)

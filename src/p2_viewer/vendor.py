@@ -99,9 +99,8 @@ TPD_GAIN_SELECT = 5
 
 # Palette identifiers understood by the camera's preview half.
 #
-# This is unrelated to p2_viewer.colormaps: those are the palettes the viewer
-# renders itself. These ids only change the camera's own preview image, which
-# the viewer does not display, so they are rarely useful.
+# These ids change only the camera's own preview image, which the viewer does
+# not display. They are unrelated to p2_viewer.colormaps.
 PALETTES = {
     1: "whitehot",
     3: "ironred",
@@ -137,12 +136,6 @@ class DeviceInfo:
     part_number: str = ""
     serial_number: str = ""
     sensor_id: bytes = b""
-
-    def __str__(self) -> str:
-        return (
-            f"{self.firmware_version} (built {self.firmware_date}), "
-            f"sensor {self.ir_sensor}, serial {self.serial_number}"
-        )
 
 
 def _decode_text(raw: bytes) -> str:

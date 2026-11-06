@@ -1,12 +1,15 @@
-"""OpenCV capture backend, for platforms without V4L2 (macOS, Windows).
+"""OpenCV capture backend.
 
-CAP_PROP_CONVERT_RGB must be 0: otherwise OpenCV converts YUYV to BGR and
-gives 3 channels per pixel, yielding plausible-looking but wrong temperatures."""
+CAP_PROP_CONVERT_RGB must be 0 so OpenCV returns the raw YUYV frame instead
+of converting it to BGR."""
 
 from __future__ import annotations
 
+import sys
+
 import numpy as np
 
+from .backend import BackendError
 from .frame import FRAME_BYTES, FRAME_HEIGHT, FRAME_STRIDE, FRAME_WIDTH
 
 try:
@@ -15,8 +18,15 @@ except ImportError:  # pragma: no cover - exercised only without the extra
     cv2 = None
 
 
-class OpenCVError(RuntimeError):
+class OpenCVError(BackendError):
     """Raised when the OpenCV backend cannot be used."""
+
+
+def _api_preference() -> int:
+    """The platform-appropriate OpenCV capture API."""
+    if sys.platform == "darwin":
+        return cv2.CAP_AVFOUNDATION
+    return cv2.CAP_V4L2
 
 
 class OpenCVCapture:
@@ -39,15 +49,21 @@ class OpenCVCapture:
         if source.isdigit():
             source = int(source)
 
-        self.cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
+        api = _api_preference()
+        self.cap = cv2.VideoCapture(source, api)
         if not self.cap.isOpened():
-            raise OpenCVError(f"could not open {self.path!r} via OpenCV")
+            hint = ""
+            if sys.platform == "darwin":
+                hint = "; on macOS use --backend avfoundation"
+            raise OpenCVError(
+                f"could not open {self.path!r} via OpenCV{hint}"
+            )
 
-        # Must be set before the first read, or OpenCV converts to BGR.
-        self.cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
+        # Set the pixel format, then disable RGB conversion.
         self.cap.set(
             cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"YUYV")
         )
+        self.cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
 
@@ -60,10 +76,16 @@ class OpenCVCapture:
             frame = frame[0]
         arr = np.asarray(frame)
         if arr.nbytes != FRAME_BYTES:
+            hint = ""
+            if sys.platform == "darwin":
+                hint = (
+                    "; macOS AVFoundation did not preserve raw YUYV, so use "
+                    "the default --backend avfoundation"
+                )
             raise OpenCVError(
                 f"unexpected frame size {arr.shape} ({arr.nbytes} bytes), "
                 f"expected {FRAME_BYTES}; CAP_PROP_CONVERT_RGB may not have "
-                f"taken effect"
+                f"taken effect{hint}"
             )
         return arr.tobytes()
 
