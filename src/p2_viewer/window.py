@@ -690,6 +690,7 @@ class Window:
         label_stroke: int = DEFAULT_LABEL_STROKE,
         marker_outline: int = DEFAULT_MARKER_OUTLINE,
         small_font_size: int | None = None,
+        point_renderer=None,
     ) -> None:
         if QApplication is None:
             raise DisplayError(
@@ -704,6 +705,7 @@ class Window:
         self.label_stroke = label_stroke
         self.marker_outline = marker_outline
         self.small_font_size = small_font_size
+        self.point_renderer = point_renderer
         self.app = None
         self._label = None
         self._timer = None
@@ -1054,14 +1056,17 @@ class Window:
         )
 
     def save_screenshot(self) -> None:
-        """Write the current frame, without any window overlays, to a PNG."""
+        """Write the current frame and sample points to a PNG."""
         if self._frame is None:
             return
         from PIL import Image
 
+        rgb = self._frame.rgb
+        if self._points and self.point_renderer is not None:
+            rgb = self.point_renderer(rgb, self._points, self._frame.temps)
         stamp = time.strftime("%Y%m%d-%H%M%S")
         path = Path(f"p2pro-{stamp}.png").resolve()
-        Image.fromarray(self._frame.rgb).save(path)
+        Image.fromarray(rgb).save(path)
         print(f"saved {path}", file=sys.stderr)
 
     # -- frames --------------------------------------------------------------

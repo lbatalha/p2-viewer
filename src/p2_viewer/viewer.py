@@ -669,6 +669,7 @@ def main() -> int:
                     label_stroke=LABEL_STROKE,
                     marker_outline=MARKER_OUTLINE,
                     small_font_size=renderer.small_font_size,
+                    point_renderer=renderer.render_points,
                 )
                 window.open(out_w, out_h)
             except DisplayError as exc:

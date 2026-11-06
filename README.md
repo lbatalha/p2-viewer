@@ -253,8 +253,9 @@ the window with Qt, so they stay sharp when the window is scaled. The same
 annotations are baked into frames published to `--out` and into snapshots.
 Sample points (`P1`..`P4`) are also drawn into published frames while a window
 is open and points exist, so V4L2 and HTTP consumers see the same markers.
-Snapshots remain the rendered frame without the window-only overlays. Running
-with `--no-window` has no click points to publish.
+Snapshots include the baked annotations and sample points, but not the
+window-only overlays. Running with `--no-window` has no click points to
+publish.
 
 ## Camera settings
 
