@@ -1,4 +1,4 @@
-"""InfiRay P2 Pro thermal camera viewer for Linux."""
+"""InfiRay P2 Pro thermal camera viewer for Linux and macOS."""
 
 from __future__ import annotations
 

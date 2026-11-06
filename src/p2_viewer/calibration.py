@@ -19,8 +19,6 @@ so the true temperature is
 
     T_true = ((T_apparent^4 - (1 - e) * T_ref^4) / e) ** 0.25
 
-Applying this is optional: the phone app may or may not do the same thing,
-and that has to be checked against the app rather than assumed.
 """
 
 from __future__ import annotations

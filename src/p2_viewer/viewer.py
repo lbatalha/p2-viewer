@@ -53,13 +53,8 @@ def load_font(spec: str, size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageF
     """Load a font at `size`.
 
     `spec` may be a path to a font file, or a family name such as "monospace"
-    or "DejaVu Sans Mono". Family names are resolved through fontconfig by
-    shelling out to fc-match: Pillow's ImageFont.truetype() passes its argument
-    straight to FreeType, which only understands paths, and driving fontconfig
-    via ctypes means binding a lot of C API for very little gain.
-
-    Falls back to Pillow's built-in bitmap font if nothing resolves, so a
-    missing font degrades the labels rather than killing the stream.
+    or "DejaVu Sans Mono". Family names are resolved through fontconfig with
+    ``fc-match``. If nothing resolves, labels use Pillow's built-in bitmap font.
     """
     path = spec
     if not Path(spec).is_file():
@@ -109,11 +104,6 @@ class Renderer:
         """Format a Celsius value for display in the configured unit."""
         scale, offset, sym = UNITS[self.unit]
         return f"{celsius * scale + offset:.{decimals}f}{sym}"
-        # legend geometry (set in __init__ so both render and layout agree)
-        self.bar_w = 14
-        self.legend_pad = 6          # gap between bar and its tick labels
-        self.legend_right = 10       # margin from right edge
-        self.legend_h = min(self.out_h - 80, 360)
 
     # -- layout helpers ------------------------------------------------------
     def _text_size(self, text: str, font) -> tuple[int, int]:
@@ -241,6 +231,44 @@ class Renderer:
 
         return np.asarray(im, dtype=np.uint8)
 
+    def render_points(self, rgb: np.ndarray, points, temps: np.ndarray) -> np.ndarray:
+        """Draw sample-point markers on `rgb` and return the result.
+
+        Returns `rgb` unchanged when `points` is empty.
+        """
+        if not points:
+            return rgb
+
+        im = Image.fromarray(rgb, "RGB").copy()
+        draw = ImageDraw.Draw(im)
+        s = self.scale
+        radius = 5
+        arm = 9
+
+        for index, point in enumerate(points):
+            px = point.x * s + s // 2
+            py = point.y * s + s // 2
+            colour = point.colour
+            draw.ellipse(
+                [px - radius, py - radius,
+                 px + radius - 1, py + radius - 1],
+                outline=colour,
+                width=1,
+            )
+            draw.line([(px - arm, py), (px + arm, py)],
+                      fill=colour, width=1)
+            draw.line([(px, py - arm), (px, py + arm)],
+                      fill=colour, width=1)
+            label = (
+                f"P{index + 1} "
+                f"{self.format_temp(float(temps[point.y, point.x]))}"
+            )
+            draw.text((px + 8, py - 7), label, fill=colour,
+                      font=self.font_small, stroke_width=1,
+                      stroke_fill=(0, 0, 0))
+
+        return np.asarray(im, dtype=np.uint8)
+
     def _draw_legend(self, im, draw, stats: FrameStats) -> None:
         bx, by, bw, bh = self._legend_geometry()
         grad = np.linspace(255, 0, bh).astype(np.uint8)
@@ -260,7 +288,7 @@ class Renderer:
             draw.line([(bx + bw, tick_y), (bx + bw + 3, tick_y)],
                       fill=(255, 255, 255), width=1)
             text = self.format_temp(temp, decimals=0)
-            tw, th = self._text_size(text, tick_font)
+            _tw, th = self._text_size(text, tick_font)
             ty = min(max(tick_y - th // 2, 0), self.out_h - th - 1)
             draw.text((label_x, ty), text, fill=(255, 255, 255), font=tick_font,
                       stroke_width=LABEL_STROKE, stroke_fill=(0, 0, 0))
@@ -357,12 +385,7 @@ class CsvLogger:
 
 
 def status(message: str) -> None:
-    """Write a progress line to stderr.
-
-    Informational output goes to stderr so that stdout is reserved for data
-    records (for example the CSV stream written by ``--csv``). Redirecting or
-    piping stdout then yields only the measurements.
-    """
+    """Write a progress line to stderr."""
     print(message, file=sys.stderr)
 
 
@@ -400,20 +423,21 @@ def apply_gain(mode: str) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Stream annotated thermal video from an InfiRay P2 Pro "
-                    "to a v4l2loopback device.",
+        description="Stream annotated thermal video from an InfiRay P2 Pro.",
     )
     ap.add_argument("--cam", required=True, metavar="PATH",
-                    help="P2 Pro capture node, for example /dev/video4")
-    ap.add_argument("--out", default=None, metavar="PATH",
-                    help="v4l2loopback node to publish to, for example "
-                         "/dev/video1. Without this the viewer only shows a "
-                         "window")
+                    help="P2 Pro capture device: /dev/videoN on Linux, or an "
+                         "AVFoundation index/name on macOS (for example 0)")
+    ap.add_argument("--out", default=None, metavar="PATH_OR_URL",
+                    help="publish to a v4l2loopback node on Linux "
+                         "(/dev/video1) or serve MJPEG at an HTTP bind "
+                         "address (http://0.0.0.0:8080/stream.mjpg). "
+                         "Without this the viewer only shows a window")
     ap.add_argument("--no-window", action="store_true",
                     help="do not open a display window")
     ap.add_argument("--csv", default=None, metavar="PATH",
                     help="log every measurement to PATH as CSV: timestamp, "
-                         "name (min/max/center/P1..), frame number and value")
+                         "name (min/max/center/P1..), sample number and value")
     ap.add_argument("--scale", type=int, default=3, help="integer upscale factor")
     ap.add_argument("--font-size", type=int, default=DEFAULT_FONT_SIZE, metavar="PX",
                     help="label font size in pixels (default: %(default)s)")
@@ -448,8 +472,8 @@ def main() -> int:
     ap.add_argument("--frames", type=int, default=0, help="0 = run forever")
     args = ap.parse_args()
 
-    # The window is the default output; publishing to a loopback device is
-    # opt-in, so nothing is written anywhere unless --out names a device.
+    # The window is the default output; publishing is opt-in, so nothing is
+    # written anywhere unless --out names a device or URL.
     use_window = not args.no_window
     use_sink = args.out is not None
     out_path = args.out
@@ -477,7 +501,13 @@ def main() -> int:
             return 1
 
     cam = backend.open_capture(args.backend, cam_path)
-    sink = backend.open_sink(out_path) if use_sink else None
+    sink = None
+    if use_sink:
+        try:
+            sink = backend.open_sink(out_path)
+        except backend.BackendError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
 
     renderer = Renderer(
         args.scale, args.font, args.palette, args.unit, args.font_size
@@ -492,12 +522,18 @@ def main() -> int:
         def __init__(self) -> None:
             self.frames = 0
             self.done = False
+            self.error: str | None = None
 
         def grab(self):
             if self.done:
                 return None
             buf = cam.read()
             if buf is None:
+                error = getattr(cam, "error", None)
+                if error:
+                    self.error = error
+                    status(f"capture stopped: {error}")
+                self.done = True
                 return None
             temps = decode_radiometric(buf, cam.stride)
             if emissivity is not None:
@@ -506,8 +542,19 @@ def main() -> int:
             stats = frame_stats(temps)
             rgb = renderer.render(temps, stats)
             if sink is not None:
-                # loopback expects packed BGR
-                sink.write(rgb[:, :, ::-1])
+                output = rgb
+                if window is not None and window.points:
+                    output = renderer.render_points(
+                        rgb, window.points, temps
+                    )
+                # Sinks consume packed BGR frames.
+                try:
+                    sink.write(output[:, :, ::-1])
+                except backend.BackendError as exc:
+                    self.error = str(exc)
+                    status(f"output stopped: {exc}")
+                    self.done = True
+                    return None
             if logger is not None:
                 # Points only exist when a window is running; without one the
                 # log still carries the min/max/centre readings.
@@ -533,7 +580,12 @@ def main() -> int:
 
         if sink is not None:
             sink.open(out_w, out_h)
-            status(f"output  {out_path}: {out_w}x{out_h} BGR3")
+            kind = (
+                "MJPEG over HTTP"
+                if out_path.startswith("http://")
+                else "BGR3"
+            )
+            status(f"output  {out_path}: {out_w}x{out_h} {kind}")
         else:
             status("output  window only (no loopback)")
 
@@ -557,18 +609,20 @@ def main() -> int:
             if window.interrupted:
                 status("\ninterrupted")
         else:
-            # Headless: pump frames ourselves at the camera's own rate.
-            # grab() returns None once the producer is done or the camera
-            # stops delivering frames, so that is the only exit we need.
+            # Headless: pump frames at the camera's rate. grab() returns None
+            # once the producer is done or capture stops.
             while producer.grab() is not None:
                 pass
 
         if args.frames:
             status(f"done after {producer.frames} frames")
 
+        if producer.error is not None:
+            return 1
+
     except KeyboardInterrupt:
         status("\ninterrupted")
-    except DisplayError as exc:
+    except backend.BackendError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     finally:

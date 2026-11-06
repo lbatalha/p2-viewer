@@ -1,12 +1,10 @@
 """Qt display window, driven by a QTimer on Qt's own event loop.
 
-PySide6 provides native Wayland support, avoiding XWayland on Wayland desktops.
-
-The window is also the interactive surface: hovering reports the temperature
-under the cursor, clicking drops sample points that are tracked over time,
-and the overlay panel has pause and screenshot buttons. All of that lives in
-the widget layer, so nothing is added to the frames published to the virtual
-camera.
+The window is the interactive surface: hovering reports the temperature under
+the cursor, clicking drops sample points tracked over time, and the overlay
+panel has pause and screenshot buttons. The window paints its own controls and
+hover readout; published frames contain the rendered image and sample-point
+markers.
 """
 
 from __future__ import annotations
@@ -72,8 +70,7 @@ BUTTON_SIZE = QSize(30, 22)
 #: Opacity of the control buttons: 0.5 means 50% transparent.
 BUTTON_OPACITY = 0.5
 
-#: How often the table text is refreshed, in seconds. The image updates at the
-#: camera's rate, but re-laying out a dozen labels that often is wasted work.
+#: How often the table text is refreshed, in seconds.
 TABLE_INTERVAL = 0.2
 
 
@@ -122,13 +119,9 @@ class FrameProducer(Protocol):
 class _AspectLabel(QLabel):
     """QLabel that scales its pixmap to fit while keeping aspect ratio.
 
-    ``setScaledContents(True)`` stretches to fill, which distorts the image as
-    soon as the window is resized or fullscreened. Painting the pixmap into a
-    centred, aspect-correct rectangle instead keeps the thermal image square
-    and adds black letterbox bars.
-
-    Drawing the hover readout and point markers happens here rather than in
-    the renderer, so they never end up in the published video.
+    The image is painted into a centred, aspect-correct rectangle; the rest of
+    the widget is black. The hover readout and window overlays are painted
+    here, separately from the rendered frame.
     """
 
     def __init__(self) -> None:
@@ -146,8 +139,8 @@ class _AspectLabel(QLabel):
         self._on_add_point = None
         self._on_remove_point = None
         self._on_key = None
-        # Keys are handled here rather than with QShortcut, which needs the
-        # window to be active.
+        # Keys are handled by this widget so they work without an active
+        # window.
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
     # -- collaborators -------------------------------------------------------
@@ -221,13 +214,7 @@ class _AspectLabel(QLabel):
         super().resizeEvent(event)
 
     def _scaled_pixmap(self, rect: QRect) -> QPixmap:
-        """The frame pre-scaled to `rect`.
-
-        Scaling on every paint is what makes a fullscreen window feel slow,
-        and a hover updates the image far more often than the camera produces
-        frames. Scaling once per frame and blitting 1:1 afterwards keeps
-        interaction cheap at any window size.
-        """
+        """Return the frame scaled to `rect`, cached until the size changes."""
         size = (rect.width(), rect.height())
         if self._scaled is None or self._scaled_size != size:
             self._scaled = self._pixmap.scaled(
@@ -380,14 +367,10 @@ class _OverlayPanel(QWidget):
 
 
 class _GlyphButton(QPushButton):
-    """A button that draws its glyph centred by its actual rendered ink.
+    """A button that centres its glyph using the glyph's rendered ink.
 
-    Qt centres button text using the font's metrics, and ``QFontMetrics``
-    reports those for the *primary* font. The glyphs used here are missing
-    from that font, so Qt draws them from a fallback whose real ink sits at a
-    different position -- which is why the naive approach leaves glyphs
-    visibly off-centre. This renders the glyph once into a probe image, finds
-    where its ink actually landed, and caches a version shifted to the centre.
+    The glyph may come from a fallback font with different metrics, so the
+    button measures the rendered ink box and shifts the glyph to the centre.
     """
 
     def __init__(self, glyph: str, parent=None) -> None:
@@ -399,9 +382,6 @@ class _GlyphButton(QPushButton):
         self.setFont(font)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setFixedSize(BUTTON_SIZE)
-
-    def glyph(self) -> str:
-        return self._glyph
 
     def setGlyph(self, glyph: str) -> None:  # noqa: N802 - Qt naming
         self._glyph = glyph
@@ -756,7 +736,6 @@ class Window:
         stamp = time.strftime("%Y%m%d-%H%M%S")
         path = Path(f"p2pro-{stamp}.png").resolve()
         Image.fromarray(self._frame.rgb).save(path)
-        # stderr keeps stdout free for data records (see the --csv option).
         print(f"saved {path}", file=sys.stderr)
 
     # -- frames --------------------------------------------------------------
@@ -803,10 +782,6 @@ class Window:
     def interrupted(self) -> bool:
         """True if the loop stopped because of Ctrl-C."""
         return self._interrupted
-
-    @property
-    def closed(self) -> bool:
-        return self._closed
 
     @property
     def points(self) -> list[SamplePoint]:

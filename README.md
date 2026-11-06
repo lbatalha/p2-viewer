@@ -1,23 +1,38 @@
 # p2-viewer
 
-A Linux viewer for the InfiRay P2 Pro thermal camera. It decodes the camera's
-radiometric data, draws temperature annotations on top, and can either show
-them in a window or publish the result as a virtual camera for OBS, Zoom,
-Discord or anything else that consumes a webcam.
+A Linux and macOS viewer for the InfiRay P2 Pro thermal camera. It decodes
+the camera's radiometric data, draws temperature annotations on top, and can
+either show them in a window, publish the result as a virtual camera on Linux,
+or serve an MJPEG stream over HTTP.
 
 ![example frame](docs/screenshot.png)
 
 ## Requirements
 
-- Linux (the default `v4l2` backend depends on V4L2 and `v4l2loopback`)
+- Linux or macOS
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/) for dependency management
+- Linux: V4L2 and `v4l2loopback` for loopback output
+- macOS: FFmpeg (`brew install ffmpeg`) for camera capture
+- macOS: `fontconfig` (`brew install fontconfig`) for `fc-match` font
+  resolution; without it labels fall back to Pillow's built-in font
+- macOS: `libusb` (`brew install libusb`) only for vendor commands
 
-The camera must be plugged in and visible as a V4L2 video node:
+On Linux the camera must be plugged in and visible as a V4L2 video node:
 
 ```sh
 v4l2-ctl --list-devices
 ```
+
+On macOS, list the AVFoundation device index:
+
+```sh
+ffmpeg -f avfoundation -list_devices true -i ""
+```
+
+The P2 Pro appears as `USB Camera`. Give the terminal or IDE that runs the
+viewer access in System Settings -> Privacy & Security -> Camera. macOS does
+not allow camera access from SSH sessions.
 
 ## Installation
 
@@ -25,8 +40,7 @@ v4l2-ctl --list-devices
 git clone <repo-url> p2-viewer
 cd p2-viewer
 
-uv sync --extra qt              # window support (Qt/PySide6)
-uv sync --extra qt --extra opencv   # plus the OpenCV capture backend
+uv sync --extra qt --extra opencv --extra usb
 ```
 
 Extras are optional so the base install stays small:
@@ -35,9 +49,10 @@ Extras are optional so the base install stays small:
 | -------- | --------------------------------- |
 | `qt`     | Display window (PySide6)          |
 | `opencv` | OpenCV capture backend            |
-| `all`    | Both of the above                 |
+| `usb`    | Vendor command support (PyUSB)    |
+| `all`    | All of the above                  |
 
-Without `qt`, run with `--no-window`.
+Without `qt`, use `--no-window` with an `--out` URL or Linux loopback device.
 
 ## Virtual camera output
 
@@ -66,57 +81,102 @@ ffplay -f v4l2 -input_format bgr3 -video_size 768x576 /dev/video8
 If you use `exclusive_caps=1`, start the viewer *before* the consumer; the
 device only advertises a capture format while something is writing to it.
 
-## Usage
+## HTTP MJPEG output
 
-`--cam` is required: the viewer does not guess which node the camera is on.
-Find it with `v4l2-ctl --list-devices`; it is the one whose card is a USB
-Camera and which offers a 256x384 mode.
+Pass an `http://` URL to `--out` to make the viewer serve a multipart MJPEG
+stream. The host and port in the URL are the local bind address:
 
 ```sh
+uv run p2-viewer --cam 0 --out http://0.0.0.0:8080/stream.mjpg
+```
+
+Use `0.0.0.0` to listen on every interface, or a specific local address to
+bind only one:
+
+```sh
+uv run p2-viewer --cam 0 --out http://192.168.1.50:8080/stream.mjpg
+```
+
+On Linux the same command works with the Linux camera node:
+
+```sh
+uv run p2-viewer --cam /dev/video4 --out http://0.0.0.0:8080/stream.mjpg
+```
+
+Use `--no-window` to serve without showing a window:
+
+```sh
+uv run p2-viewer --cam 0 --out http://0.0.0.0:8080/stream.mjpg --no-window
+```
+
+Consume the stream with a browser, VLC, FFmpeg, or an OBS Browser Source:
+
+```sh
+ffplay http://192.168.1.50:8080/stream.mjpg
+```
+
+JPEG frames are encoded at quality 96. There is no authentication: bind to
+`0.0.0.0` only on trusted networks, or bind to a specific LAN address and use
+a firewall.
+
+## Usage
+
+`--cam` is required: the viewer does not guess which device the camera is on.
+On Linux use the V4L2 node, and on macOS the AVFoundation index or name.
+
+```sh
+# Linux
 uv run p2-viewer --cam /dev/video4                               # window only
 uv run p2-viewer --cam /dev/video4 --out /dev/video1             # window + virtual camera
 uv run p2-viewer --cam /dev/video4 --out /dev/video1 --no-window # headless
 uv run p2-viewer --cam /dev/video4 --palette rainbow
 uv run p2-viewer --cam /dev/video4 --unit F
+
+# macOS
+uv run p2-viewer --cam 0                                         # window only
+uv run p2-viewer --cam 0 --out http://0.0.0.0:8080/stream.mjpg  # window + MJPEG
+uv run p2-viewer --cam 0 --out http://0.0.0.0:8080/stream.mjpg --no-window
+uv run p2-viewer --cam 0 --palette rainbow
 ```
 
 ### Output modes
 
-Showing a window is the default. Publishing to a virtual camera is opt-in, so
-nothing is written to a device unless you name one with `--out`.
+Showing a window is the default. Publishing is opt-in, so nothing is written
+unless you name a device or URL with `--out`.
 
 | Flags | Behaviour |
 | ----- | --------- |
 | `--cam` | Window only |
 | `--cam --out` | Window **and** publish to `--out` |
-| `--cam --out --no-window` | Publish only; safe over SSH |
+| `--cam --out --no-window` | Publish only; useful for HTTP MJPEG, and for Linux loopback over SSH |
 | `--cam --no-window` | Error, since nothing would be produced |
 
 If the window cannot be opened (no display, or `qt` extra not installed) it
-prints a warning and carries on publishing to the virtual camera, or fails if
-there is no `--out` either.
+prints a warning and carries on publishing, or fails if there is no `--out`
+either.
 
 ### Capture backends
 
-| Backend  | Flag                | Notes |
-| -------- | ------------------- | ----- |
-| `v4l2`   | `--backend v4l2`    | **Default.** Talks to the kernel directly (ioctl + mmap). Fastest, no extra dependencies, Linux only. |
-| `opencv` | `--backend opencv`  | Uses `cv2.VideoCapture`, the way the camera is reached where there is no V4L2. Slower and pulls in a large dependency. |
+| Backend        | Flag                      | Notes |
+| -------------- | ------------------------- | ----- |
+| `v4l2`         | `--backend v4l2`          | **Linux default.** Talks to the kernel directly (ioctl + mmap). Fastest, no extra dependencies. |
+| `avfoundation` | `--backend avfoundation`  | **macOS default.** Uses FFmpeg's AVFoundation input, preserving raw YUYV. |
+| `opencv`       | `--backend opencv`        | Uses `cv2.VideoCapture`. |
 
 The OpenCV backend also accepts a bare index (`--cam 4`) instead of a node
 path.
 
-The output side always uses the V4L2 writer: OpenCV's `VideoWriter` cannot
-reliably target a loopback device.
+The output side is chosen by `--out`: a `/dev/video*` path uses the Linux
+V4L2 writer, and an `http://` URL serves MJPEG on either platform.
 
 ### Options
 
 | Option | Description |
 | ------ | ----------- |
-| `--cam PATH` | **Required.** Camera capture node, e.g. `/dev/video4` |
-| `--out PATH` | Loopback device to publish to, e.g. `/dev/video1`. Omit for a window only |
+| `--cam PATH` | **Required.** Linux V4L2 node (`/dev/video4`) or macOS AVFoundation index/name (`0`) |
+| `--out PATH_OR_URL` | Linux loopback device (`/dev/video1`) or MJPEG bind URL (`http://0.0.0.0:8080/stream.mjpg`). Omit for a window only |
 | `--no-window` | Do not open a display window; needs `--out` |
-| `--backend {v4l2,opencv}` | Capture backend (default `v4l2`) |
+| `--backend NAME` | Capture backend: `v4l2` or `opencv` on Linux; `avfoundation` or `opencv` on macOS |
 | `--palette NAME` | `ironbow` (default), `rainbow`, `whitehot`, `blackhot`, `hotmetal`, `arctic` |
 | `--unit {C,F,K}` | Temperature unit for labels (default `C`) |
 | `--scale N` | Integer upscale factor (default `3`, so 256x192 becomes 768x576) |
@@ -159,7 +219,7 @@ numbers of the ones after it. Points record the pixel under the marker, while
 `min`/`max`/`center` are per-frame readings. A point placed between two samples
 first appears in the next one.
 
-All progress messages go to stderr, so stdout carries only data.
+All progress messages go to stderr.
 
 ### In the window
 
@@ -188,10 +248,11 @@ state: `▸` means the table is hidden, `▾` means it is showing.
 The three buttons in the control strip are constant size and sit at 50%
 opacity.
 
-Hover, points and the panel are drawn by the window only. Frames published to
-`--out` never contain them, so a virtual camera feed stays clean; use
-**Snapshot** if you want the annotated image. Snapshots are the rendered frame
-without any of the window overlay either.
+The hover readout and the point panel are drawn by the window only. Sample
+points (`P1`..`P4`) are also drawn into frames published to `--out` while a
+window is open and points exist, so V4L2 and HTTP consumers see the same
+markers. Snapshots remain the rendered frame without the window overlay.
+Running with `--no-window` has no click points to publish.
 
 ## Camera settings
 
@@ -207,7 +268,8 @@ uv run p2-viewer-vendor palette --set 11
 uv run p2-viewer-vendor emissivity --set 0.95
 ```
 
-This needs access to the USB device node, which normally means a udev rule:
+On Linux this needs access to the USB device node, which normally means a
+udev rule:
 
 ```
 # /etc/udev/rules.d/60-p2pro.rules
@@ -215,6 +277,9 @@ SUBSYSTEMS=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="5830", MODE="0666
 ```
 
 Then `sudo udevadm control --reload-rules`.
+
+On macOS, install `libusb` (`brew install libusb`) so PyUSB has a backend.
+No udev rule is needed.
 
 ## Notes on accuracy
 
@@ -252,17 +317,17 @@ uv run p2-viewer --emissivity 0.95 --reflected-temp 294
 uv run p2-viewer --emissivity auto --reflected-temp auto
 ```
 
-`auto` reads the values back from the camera, so if the app has written an
-emissivity into it, the viewer follows along automatically. The viewer prints
-the values it is using at startup.
+`auto` reads the values back from the camera, so if the camera has an
+emissivity set, the viewer follows it automatically. The viewer prints the
+values it is using at startup.
 
 The correction is off by default, so the viewer shows exactly what the
 camera reports.
 
 ## How the camera protocol works
 
-The P2 Pro is a plain UVC camera, so no special driver is needed. The trick is
-that one of its video modes carries extra data hidden in the image.
+The P2 Pro is a plain UVC camera, so no special driver is needed. One of its
+video modes carries extra data hidden in the image.
 
 ### Two views in one frame
 

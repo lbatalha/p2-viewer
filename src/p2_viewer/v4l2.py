@@ -12,7 +12,6 @@ import numpy as np
 from .frame import FRAME_HEIGHT, FRAME_WIDTH
 
 # --- V4L2 ioctl numbers -------------------------------------------------------
-VIDIOC_G_FMT = 0xC0D05604
 VIDIOC_S_FMT = 0xC0D05605
 VIDIOC_REQBUFS = 0xC0145608
 VIDIOC_QUERYBUF = 0xC0585609
@@ -32,7 +31,6 @@ FMT_STRUCT_SIZE = 208  # sizeof(struct v4l2_format)
 BUF_INDEX = 0
 BUF_TYPE = 4
 BUF_BYTESUSED = 8
-BUF_SEQUENCE = 56
 BUF_MEMORY = 60
 BUF_OFFSET = 64
 BUF_LENGTH = 72
@@ -56,8 +54,6 @@ class _V4L2Device:
         self.bytesperline = 0
         self.width = 0
         self.height = 0
-        self.pixfmt = 0
-        self.sizeimage = 0
 
     # -- low level -----------------------------------------------------------
     def _ioctl(self, request: int, arg, label: str) -> None:
@@ -95,8 +91,8 @@ class _V4L2Device:
             )
 
     def _parse_fmt(self, buf: bytearray) -> None:
-        (self.width, self.height, self.pixfmt,
-         _field, self.bytesperline, self.sizeimage) = struct.unpack_from(
+        (self.width, self.height, _pixfmt,
+         _field, self.bytesperline, _sizeimage) = struct.unpack_from(
             "<IIIIII", buf, 8
         )
 

@@ -119,6 +119,13 @@ usb = [
     { name = "pyusb" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "opencv-python" },
+    { name = "pyside6-essentials" },
+    { name = "pyusb" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "numpy", specifier = ">=2.5.4" },
@@ -129,6 +136,13 @@ requires-dist = [
     { name = "pyusb", marker = "extra == 'usb'", specifier = ">=1.3.1" },
 ]
 provides-extras = ["opencv", "qt", "usb", "all"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "opencv-python", specifier = ">=5.0" },
+    { name = "pyside6-essentials", specifier = ">=6.12" },
+    { name = "pyusb", specifier = ">=1.3.1" },
+]
 
 [[package]]
 name = "pillow"
