@@ -17,6 +17,7 @@ from PIL import Image, ImageDraw, ImageFont
 from . import backend, colormaps
 from .calibration import DEFAULT_REFLECTED_TEMPERATURE, correct_celsius
 from .frame import CAM_HEIGHT, CAM_WIDTH, FrameStats, decode_radiometric, frame_stats
+from .overlay import LegendItem, LineItem, OverlayLayout, RectItem, TextItem
 from .window import DisplayError, Frame, Window
 
 # unit -> (scale, offset, symbol); value = celsius * scale + offset
@@ -90,10 +91,12 @@ class Renderer:
         self.out_h = CAM_HEIGHT * scale
         self.lut = colormaps.build_lut(palette)
         self.unit = unit
+        self.font_spec = font
         self.font_size = font_size
         self.font = load_font(font, font_size)
         # Legend ticks are slightly smaller than the main labels.
-        self.font_small = load_font(font, max(7, round(font_size * 0.8)))
+        self.small_font_size = max(7, round(font_size * 0.8))
+        self.font_small = load_font(font, self.small_font_size)
         # legend geometry (kept here so render and layout agree)
         self.bar_w = 14
         self.legend_pad = 6          # gap between bar and its tick labels
@@ -102,6 +105,11 @@ class Renderer:
         # Widest tick label the legend can show, so the gutter fits whatever
         # font size was asked for.
         self.legend_text_w = self._text_size("-888\u00b0", self.font_small)[0]
+        # The bar itself never changes, so build it once for either painter.
+        grad = np.linspace(255, 0, self.legend_h).astype(np.uint8)
+        self.legend_bar = self.lut[
+            np.repeat(grad[:, None], self.bar_w, axis=1)
+        ]
 
     def format_temp(self, celsius: float, decimals: int = 1) -> str:
         """Format a Celsius value for display in the configured unit."""
@@ -177,62 +185,143 @@ class Renderer:
         return best if best else (px + margin, py, 0)
 
     # -- main render ---------------------------------------------------------
-    def render(self, temps: np.ndarray, stats: FrameStats) -> np.ndarray:
-        """Render one annotated frame as an (h, w, 3) uint8 RGB array."""
+    def render_base(self, temps: np.ndarray, stats: FrameStats) -> np.ndarray:
+        """Render the thermal image without any annotations."""
         lo, hi = stats.t_min, stats.t_max
         span = max(hi - lo, 0.1)
         idx = ((temps - lo) * (255.0 / span)).clip(0, 255).astype(np.uint8)
         rgb = self.lut[idx]
-
         im = Image.fromarray(rgb, "RGB").resize(
             (self.out_w, self.out_h), Image.NEAREST
         )
-        draw = ImageDraw.Draw(im)
+        return np.asarray(im, dtype=np.uint8)
+
+    def _legend_layout(self, stats: FrameStats) -> LegendItem:
+        bx, by, bw, bh = self._legend_geometry()
+        n_ticks = 5
+        label_x = bx + bw + self.legend_pad
+        ticks = []
+        labels = []
+        for i in range(n_ticks):
+            frac = i / (n_ticks - 1)               # 0 = hottest (top)
+            temp = stats.t_max - frac * (stats.t_max - stats.t_min)
+            tick_y = by + int(round(frac * (bh - 1)))
+            ticks.append(LineItem(
+                bx + bw, tick_y, bx + bw + 3, tick_y, (255, 255, 255),
+            ))
+            text = self.format_temp(temp, decimals=0)
+            _tw, th = self._text_size(text, self.font_small)
+            ty = min(max(tick_y - th // 2, 0), self.out_h - th - 1)
+            labels.append(TextItem(
+                text, label_x, ty, (255, 255, 255), small=True,
+            ))
+
+        cap = UNITS[self.unit][2]
+        cw, _ = self._text_size(cap, self.font_small)
+        cap_y = (
+            by - LEGEND_CAPTION_GAP - LABEL_STROKE
+            - self._text_ink_bottom(cap, self.font_small)
+        )
+        bar_centre = bx + bw // 2
+        caption = TextItem(
+            cap, bar_centre - cw // 2,
+            max(LABEL_STROKE + 1, cap_y), (200, 200, 200), small=True,
+        )
+        return LegendItem(
+            bx, by, bw, bh, self.legend_bar,
+            RectItem(bx - 1, by - 1, bx + bw, by + bh, (0, 0, 0)),
+            tuple(ticks), tuple(labels), caption,
+        )
+
+    def overlay(self, stats: FrameStats) -> OverlayLayout:
+        """Build the annotation layout in frame coordinates."""
         s = self.scale
         centre_colour = (0, 255, 0)
-
         cx, cy = self.out_w // 2, self.out_h // 2
         obstacles = [self._legend_obstacle()]
 
         # centre crosshair + reading
-        draw.line([(cx - 10, cy), (cx + 10, cy)], fill=centre_colour, width=1)
-        draw.line([(cx, cy - 10), (cx, cy + 10)], fill=centre_colour, width=1)
+        lines = [
+            LineItem(cx - 10, cy, cx + 10, cy, centre_colour),
+            LineItem(cx, cy - 10, cx, cy + 10, centre_colour),
+        ]
         centre_text = self.format_temp(stats.t_center)
         csize = self._text_size(centre_text, self.font)
         cx_t, cy_t, _ = self._pick_label_pos(cx + 12, cy, csize, obstacles)
-        draw.text(
-            (cx_t, cy_t - 3), centre_text, fill=centre_colour, font=self.font,
-            stroke_width=LABEL_STROKE, stroke_fill=(0, 0, 0),
-        )
+        labels = [TextItem(centre_text, cx_t, cy_t - 3, centre_colour)]
         obstacles.append(
             (cx_t - 2, cy_t - 5, cx_t + csize[0] + 2, cy_t + csize[1] + 1)
         )
 
-        # min / max markers (draw max last so it wins any residual overlap)
+        # min / max markers (max comes last so it wins any residual overlap)
         markers = [
             (stats.min_pos, self.format_temp(stats.t_min), (120, 180, 255)),
             (stats.max_pos, self.format_temp(stats.t_max), (255, 80, 80)),
         ]
-        placed = []
+        rects = []
         for pos, label, colour in markers:
             px, py = pos[0] * s + s // 2, pos[1] * s + s // 2
-            placed.append((px, py, label, colour))
-
-        # The legend is drawn first, then the markers go on top, so markers
-        # always win the overlap with it.
-        self._draw_legend(im, draw, stats)
-        for px, py, label, colour in placed:
             size = self._text_size(label, self.font_small)
             tx, ty, _ = self._pick_label_pos(px, py, size, obstacles)
-            draw.rectangle(
-                [px - 4, py - 4, px + 4, py + 4], outline=colour, width=1
-            )
-            draw.line([(px, py), (tx if tx > px else tx + size[0], ty + size[1] // 2)],
-                      fill=colour, width=1)
-            draw.text((tx, ty), label, fill=colour, font=self.font_small,
-                      stroke_width=LABEL_STROKE, stroke_fill=(0, 0, 0))
+            rects.append(RectItem(px - 4, py - 4, px + 4, py + 4, colour))
+            lines.append(LineItem(
+                px, py,
+                tx if tx > px else tx + size[0],
+                ty + size[1] // 2,
+                colour,
+            ))
+            labels.append(TextItem(label, tx, ty, colour, small=True))
+
+        return OverlayLayout(
+            self._legend_layout(stats), tuple(lines), tuple(rects), tuple(labels)
+        )
+
+    def annotate(self, base: np.ndarray, layout: OverlayLayout) -> np.ndarray:
+        """Draw `layout` onto a copy of `base` and return the RGB array."""
+        im = Image.fromarray(base, "RGB").copy()
+        draw = ImageDraw.Draw(im)
+
+        legend = layout.legend
+        im.paste(Image.fromarray(legend.pixels, "RGB"), (legend.x, legend.y))
+        self._draw_rect(draw, legend.border)
+        for tick in legend.ticks:
+            self._draw_line(draw, tick)
+        for text in legend.labels:
+            self._draw_text(draw, text)
+        self._draw_text(draw, legend.caption)
+
+        for rect in layout.rects:
+            self._draw_rect(draw, rect)
+        for line in layout.lines:
+            self._draw_line(draw, line)
+        for text in layout.labels:
+            self._draw_text(draw, text)
 
         return np.asarray(im, dtype=np.uint8)
+
+    def render(self, temps: np.ndarray, stats: FrameStats) -> np.ndarray:
+        """Render one annotated frame as an (h, w, 3) uint8 RGB array."""
+        base = self.render_base(temps, stats)
+        return self.annotate(base, self.overlay(stats))
+
+    def _draw_line(self, draw, line: LineItem) -> None:
+        draw.line(
+            [(line.x0, line.y0), (line.x1, line.y1)],
+            fill=line.colour, width=line.width,
+        )
+
+    def _draw_rect(self, draw, rect: RectItem) -> None:
+        draw.rectangle(
+            [rect.x0, rect.y0, rect.x1, rect.y1],
+            outline=rect.colour, width=rect.width,
+        )
+
+    def _draw_text(self, draw, text: TextItem) -> None:
+        font = self.font_small if text.small else self.font
+        draw.text(
+            (text.x, text.y), text.text, fill=text.colour, font=font,
+            stroke_width=LABEL_STROKE, stroke_fill=(0, 0, 0),
+        )
 
     def render_points(self, rgb: np.ndarray, points, temps: np.ndarray) -> np.ndarray:
         """Draw sample-point markers on `rgb` and return the result.
@@ -284,44 +373,6 @@ class Renderer:
                       stroke_fill=(0, 0, 0))
 
         return np.asarray(im, dtype=np.uint8)
-
-    def _draw_legend(self, im, draw, stats: FrameStats) -> None:
-        bx, by, bw, bh = self._legend_geometry()
-        grad = np.linspace(255, 0, bh).astype(np.uint8)
-        bar = self.lut[np.repeat(grad[:, None], bw, axis=1)]
-        im.paste(Image.fromarray(bar, "RGB"), (bx, by))
-        draw.rectangle([bx - 1, by - 1, bx + bw, by + bh], outline=(0, 0, 0))
-
-        tick_font = self.font_small
-        # temperatures the bar represents: top = max, bottom = min
-        n_ticks = 5
-        label_x = bx + bw + self.legend_pad
-        for i in range(n_ticks):
-            frac = i / (n_ticks - 1)               # 0 = hottest (top)
-            temp = stats.t_max - frac * (stats.t_max - stats.t_min)
-            tick_y = by + int(round(frac * (bh - 1)))
-            # tick mark
-            draw.line([(bx + bw, tick_y), (bx + bw + 3, tick_y)],
-                      fill=(255, 255, 255), width=1)
-            text = self.format_temp(temp, decimals=0)
-            _tw, th = self._text_size(text, tick_font)
-            ty = min(max(tick_y - th // 2, 0), self.out_h - th - 1)
-            draw.text((label_x, ty), text, fill=(255, 255, 255), font=tick_font,
-                      stroke_width=LABEL_STROKE, stroke_fill=(0, 0, 0))
-
-        # Unit caption, centred over the bar and clear of its top edge: the
-        # ink reaches LABEL_STROKE below the glyph box, so the gap has to
-        # account for the outline as well as the text itself.
-        cap = UNITS[self.unit][2]
-        cw, _ = self._text_size(cap, tick_font)
-        cap_y = (
-            by - LEGEND_CAPTION_GAP - LABEL_STROKE
-            - self._text_ink_bottom(cap, tick_font)
-        )
-        bar_centre = bx + bw // 2
-        draw.text((bar_centre - cw // 2, max(LABEL_STROKE + 1, cap_y)), cap,
-                  fill=(200, 200, 200), font=tick_font,
-                  stroke_width=LABEL_STROKE, stroke_fill=(0, 0, 0))
 
 
 # --- Main ---------------------------------------------------------------------
@@ -556,7 +607,9 @@ def main() -> int:
                 temps = correct_celsius(temps, emissivity, reflected_temp)
 
             stats = frame_stats(temps)
-            rgb = renderer.render(temps, stats)
+            base = renderer.render_base(temps, stats)
+            overlay = renderer.overlay(stats)
+            rgb = renderer.annotate(base, overlay)
             if sink is not None:
                 output = rgb
                 if window is not None and window.points:
@@ -579,7 +632,7 @@ def main() -> int:
             self.frames += 1
             if args.frames and self.frames >= args.frames:
                 self.done = True
-            return Frame(rgb, temps)
+            return Frame(rgb, temps, base=base, overlay=overlay)
 
     producer = Producer()
     window = None
@@ -615,6 +668,7 @@ def main() -> int:
                     frame_width=out_w,
                     label_stroke=LABEL_STROKE,
                     marker_outline=MARKER_OUTLINE,
+                    small_font_size=renderer.small_font_size,
                 )
                 window.open(out_w, out_h)
             except DisplayError as exc:

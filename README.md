@@ -245,14 +245,16 @@ only appears once at least one point is placed, so a fresh window starts
 unobstructed and the toggle button is disabled until then. The glyph shows the
 state: `▸` means the table is hidden, `▾` means it is showing.
 
-The three buttons in the control strip are constant size and sit at 50%
-opacity.
+The control strip and point table scale with the displayed image, and the
+three buttons sit at 50% opacity.
 
-The hover readout and the point panel are drawn by the window only. Sample
-points (`P1`..`P4`) are also drawn into frames published to `--out` while a
-window is open and points exist, so V4L2 and HTTP consumers see the same
-markers. Snapshots remain the rendered frame without the window overlay.
-Running with `--no-window` has no click points to publish.
+The centre/min/max labels, legend, hover readout and point panel are drawn by
+the window with Qt, so they stay sharp when the window is scaled. The same
+annotations are baked into frames published to `--out` and into snapshots.
+Sample points (`P1`..`P4`) are also drawn into published frames while a window
+is open and points exist, so V4L2 and HTTP consumers see the same markers.
+Snapshots remain the rendered frame without the window-only overlays. Running
+with `--no-window` has no click points to publish.
 
 ## Camera settings
 

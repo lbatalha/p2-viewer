@@ -2,9 +2,9 @@
 
 The window is the interactive surface: hovering reports the temperature under
 the cursor, clicking drops sample points tracked over time, and the overlay
-panel has pause and screenshot buttons. The window paints its own controls and
-hover readout; published frames contain the rendered image and sample-point
-markers.
+panel has pause and screenshot buttons. The window paints its own controls,
+annotations and hover readout; published frames contain the same annotations
+and sample-point markers baked into the image.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from typing import Protocol
 import numpy as np
 
 from .frame import CAM_HEIGHT, CAM_WIDTH
+from .overlay import OverlayLayout, TextItem
 
 try:
     from PySide6.QtCore import QRect, QRectF, QSize, Qt, QTimer
@@ -26,6 +27,7 @@ try:
         QColor,
         QFont,
         QFontDatabase,
+        QFontMetricsF,
         QImage,
         QPainter,
         QPainterPath,
@@ -73,8 +75,18 @@ PAUSE_GLYPH = "\u23f8"      # double vertical bar
 PLAY_GLYPH = "\u23f5"       # right-pointing triangle
 SNAPSHOT_GLYPH = "\U0001f4f7"  # photo camera
 
-#: Fixed control button size, so the buttons line up exactly.
+#: Base control/table geometry, scaled with the displayed image.
 BUTTON_SIZE = QSize(30, 22)
+GLYPH_FONT_SIZE = 15
+PANEL_FONT_SIZE = 11
+REMOVE_FONT_SIZE = 12
+PANEL_MARGINS = (6, 4, 6, 4)
+PANEL_SPACING = 3
+GRID_H_SPACING = 8
+GRID_V_SPACING = 1
+CONTROL_SPACING = 4
+CONTROL_MARGIN = 8
+PANEL_GAP = 10
 
 #: Opacity of the control buttons: 0.5 means 50% transparent.
 BUTTON_OPACITY = 0.5
@@ -85,10 +97,12 @@ TABLE_INTERVAL = 0.2
 
 @dataclass
 class Frame:
-    """One rendered frame: the image to show, plus the temperatures behind it."""
+    """One rendered frame plus what the window needs to draw its overlay."""
 
     rgb: np.ndarray
     temps: np.ndarray
+    base: np.ndarray | None = None
+    overlay: OverlayLayout | None = None
 
 
 @dataclass
@@ -148,13 +162,17 @@ class _AspectLabel(QLabel):
         self._on_add_point = None
         self._on_remove_point = None
         self._on_key = None
+        self._on_resize = None
         self._label_font_family = DEFAULT_LABEL_FONT
         self._label_font_size = DEFAULT_LABEL_FONT_SIZE
+        self._label_small_size = max(7, round(DEFAULT_LABEL_FONT_SIZE * 0.8))
         self._label_stroke = DEFAULT_LABEL_STROKE
         self._marker_outline = DEFAULT_MARKER_OUTLINE
         self._frame_width: int | None = None
         self._label_font = None
         self._label_font_px = None
+        self._small_font = None
+        self._small_font_px = None
         # Keys are handled by this widget so they work without an active
         # window.
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -172,6 +190,16 @@ class _AspectLabel(QLabel):
     def set_key_handler(self, handler) -> None:
         self._on_key = handler
 
+    def set_resize_handler(self, handler) -> None:
+        self._on_resize = handler
+
+    def display_scale(self) -> float:
+        """How much the frame is enlarged in the widget right now."""
+        rect = self._drawn_rect()
+        if rect is None or not self._frame_width:
+            return 1.0
+        return rect.width() / self._frame_width
+
     def set_label_style(
         self,
         font_spec: str,
@@ -179,6 +207,7 @@ class _AspectLabel(QLabel):
         frame_width: int | None,
         stroke: int,
         marker_outline: int = DEFAULT_MARKER_OUTLINE,
+        small_font_size: int | None = None,
     ) -> None:
         """Match sample-point markers to the frame's baked-in labels.
 
@@ -188,11 +217,14 @@ class _AspectLabel(QLabel):
         """
         self._label_font_family = self._resolve_font_family(font_spec)
         self._label_font_size = font_size
+        self._label_small_size = small_font_size or max(7, round(font_size * 0.8))
         self._label_stroke = stroke
         self._marker_outline = marker_outline
         self._frame_width = frame_width
         self._label_font = None
         self._label_font_px = None
+        self._small_font = None
+        self._small_font_px = None
         self.update()
 
     @staticmethod
@@ -216,6 +248,17 @@ class _AspectLabel(QLabel):
             self._label_font = font
             self._label_font_px = px
         return self._label_font
+
+    def _small_font_for(self, rect: QRect):
+        """The small font used by legend ticks and min/max labels."""
+        scale = rect.width() / self._frame_width if self._frame_width else 1.0
+        px = max(1, round(self._label_small_size * scale))
+        if self._small_font is None or self._small_font_px != px:
+            font = QFont(self._label_font_family)
+            font.setPixelSize(px)
+            self._small_font = font
+            self._small_font_px = px
+        return self._small_font
 
     def set_points(self, points: list[SamplePoint]) -> None:
         self._points = points
@@ -258,9 +301,10 @@ class _AspectLabel(QLabel):
     # -- events --------------------------------------------------------------
     def set_frame(self, frame: Frame) -> None:
         self._frame = frame
-        height, width, _ = frame.rgb.shape
+        source = frame.base if frame.base is not None else frame.rgb
+        height, width, _ = source.shape
         image = QImage(
-            frame.rgb.data, width, height, width * 3, QImage.Format.Format_RGB888
+            source.data, width, height, width * 3, QImage.Format.Format_RGB888
         )
         # QImage does not own the buffer, so hand QPixmap a copy.
         self._pixmap = QPixmap.fromImage(image.copy())
@@ -272,6 +316,8 @@ class _AspectLabel(QLabel):
         # The cached scaling is only valid for one size.
         self._scaled = None
         self._scaled_size = None
+        if self._on_resize is not None:
+            self._on_resize()
         super().resizeEvent(event)
 
     def _scaled_pixmap(self, rect: QRect) -> QPixmap:
@@ -331,8 +377,94 @@ class _AspectLabel(QLabel):
         if rect is None:
             return
         painter.drawPixmap(rect.topLeft(), self._scaled_pixmap(rect))
+        self._paint_overlay(painter, rect)
         self._paint_points(painter, rect)
         self._paint_hover(painter)
+
+    def _paint_overlay(self, painter: QPainter, rect: QRect) -> None:
+        frame = self._frame
+        if frame is None or frame.overlay is None:
+            return
+        layout = frame.overlay
+        scale = rect.width() / self._frame_width if self._frame_width else 1.0
+
+        def px(value: float) -> float:
+            return rect.x() + value * scale
+
+        def py(value: float) -> float:
+            return rect.y() + value * scale
+
+        legend = layout.legend
+        bar = QImage(
+            legend.pixels.data, legend.w, legend.h, legend.w * 3,
+            QImage.Format.Format_RGB888,
+        )
+        painter.drawImage(
+            QRectF(px(legend.x), py(legend.y),
+                   legend.w * scale, legend.h * scale),
+            bar,
+        )
+        self._draw_rect_item(painter, legend.border, rect, scale)
+        for tick in legend.ticks:
+            self._draw_line_item(painter, tick, rect, scale)
+        for text in legend.labels:
+            self._draw_text_item(painter, text, rect, scale)
+        self._draw_text_item(painter, legend.caption, rect, scale)
+
+        for item in layout.rects:
+            self._draw_rect_item(painter, item, rect, scale)
+        for item in layout.lines:
+            self._draw_line_item(painter, item, rect, scale)
+        for item in layout.labels:
+            self._draw_text_item(painter, item, rect, scale)
+
+    def _draw_line_item(self, painter, item, rect: QRect, scale: float) -> None:
+        painter.setPen(QPen(QColor(*item.colour), max(1.0, item.width * scale)))
+        painter.drawLine(
+            round(rect.x() + item.x0 * scale),
+            round(rect.y() + item.y0 * scale),
+            round(rect.x() + item.x1 * scale),
+            round(rect.y() + item.y1 * scale),
+        )
+
+    def _draw_rect_item(self, painter, item, rect: QRect, scale: float) -> None:
+        # PIL treats the rectangle bounds as inclusive pixels and draws the
+        # outline inside them. A centred QPen on a QRectF does neither, which
+        # leaves the border offset from the bar once the window is scaled, so
+        # draw the outline as four filled stripes instead.
+        colour = QColor(*item.colour)
+        x = rect.x() + item.x0 * scale
+        y = rect.y() + item.y0 * scale
+        w = (item.x1 - item.x0 + 1) * scale
+        h = (item.y1 - item.y0 + 1) * scale
+        t = max(1.0, item.width * scale)
+        painter.fillRect(QRectF(x, y, w, t), colour)
+        painter.fillRect(QRectF(x, y + h - t, w, t), colour)
+        painter.fillRect(QRectF(x, y, t, h), colour)
+        painter.fillRect(QRectF(x + w - t, y, t, h), colour)
+
+    def _draw_text_item(self, painter, item: TextItem, rect: QRect,
+                        scale: float) -> None:
+        font = (
+            self._small_font_for(rect) if item.small
+            else self._label_font_for(rect)
+        )
+        metrics = QFontMetricsF(font)
+        path = QPainterPath()
+        path.addText(
+            rect.x() + item.x * scale,
+            rect.y() + item.y * scale + metrics.ascent(),
+            font,
+            item.text,
+        )
+        stroke = max(1.0, 2.0 * self._label_stroke * scale)
+        outline = QPen(QColor(0, 0, 0), stroke)
+        outline.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.strokePath(path, outline)
+        painter.fillPath(path, QColor(*item.colour))
+        painter.restore()
 
     def _paint_points(self, painter: QPainter, rect: QRect) -> None:
         frame = self._frame
@@ -478,13 +610,25 @@ class _GlyphButton(QPushButton):
         self._glyph = glyph
         self._pixmap: QPixmap | None = None
         font = QFont("monospace")
-        font.setPixelSize(15)
+        font.setPixelSize(GLYPH_FONT_SIZE)
         self.setFont(font)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setFixedSize(BUTTON_SIZE)
 
     def setGlyph(self, glyph: str) -> None:  # noqa: N802 - Qt naming
         self._glyph = glyph
+        self._pixmap = None
+        self.update()
+
+    def set_scale(self, scale: float) -> None:
+        """Resize the button and its glyph with the displayed image."""
+        font = self.font()
+        font.setPixelSize(max(1, round(GLYPH_FONT_SIZE * scale)))
+        self.setFont(font)
+        self.setFixedSize(
+            max(1, round(BUTTON_SIZE.width() * scale)),
+            max(1, round(BUTTON_SIZE.height() * scale)),
+        )
         self._pixmap = None
         self.update()
 
@@ -545,6 +689,7 @@ class Window:
         frame_width: int | None = None,
         label_stroke: int = DEFAULT_LABEL_STROKE,
         marker_outline: int = DEFAULT_MARKER_OUTLINE,
+        small_font_size: int | None = None,
     ) -> None:
         if QApplication is None:
             raise DisplayError(
@@ -558,6 +703,7 @@ class Window:
         self.frame_width = frame_width
         self.label_stroke = label_stroke
         self.marker_outline = marker_outline
+        self.small_font_size = small_font_size
         self.app = None
         self._label = None
         self._timer = None
@@ -571,6 +717,7 @@ class Window:
         self._panel = None
         self._frame: Frame | None = None
         self._rows_updated = 0.0
+        self._panel_scale: float | None = None
 
     # -- lifecycle -----------------------------------------------------------
     def open(self, width: int, height: int) -> None:
@@ -595,12 +742,14 @@ class Window:
             self.frame_width or width,
             self.label_stroke,
             self.marker_outline,
+            self.small_font_size,
         )
         if self.format_temp is not None:
             self._label.set_formatter(self.format_temp)
         self._label.set_point_handler(self.add_point)
         self._label.set_remove_handler(self.remove_last_point)
         self._label.set_key_handler(self._on_key)
+        self._label.set_resize_handler(self._apply_panel_scale)
         self._label.closeEvent = self._on_close_event
         self._build_panel()
         self._label.show()
@@ -654,12 +803,14 @@ class Window:
             "font-family: monospace; font-size: 11px; }"
         )
         outer = QVBoxLayout(panel)
-        outer.setContentsMargins(6, 4, 6, 4)
-        outer.setSpacing(3)
+        outer.setContentsMargins(*PANEL_MARGINS)
+        outer.setSpacing(PANEL_SPACING)
+        self._outer = outer
 
         grid = QGridLayout()
-        grid.setHorizontalSpacing(8)
-        grid.setVerticalSpacing(1)
+        grid.setHorizontalSpacing(GRID_H_SPACING)
+        grid.setVerticalSpacing(GRID_V_SPACING)
+        self._grid = grid
         for column, title in enumerate(("", "now", "min", "max", "avg")):
             heading = QLabel(title)
             heading.setStyleSheet("color: #9fd2ff; background: transparent;")
@@ -727,27 +878,85 @@ class Window:
         controls = _OverlayPanel(self._label)
         strip = QHBoxLayout(controls)
         strip.setContentsMargins(0, 0, 0, 0)
-        strip.setSpacing(4)
-        for button in (toggle, self._pause_button, self._snapshot_button):
+        strip.setSpacing(CONTROL_SPACING)
+        self._strip = strip
+        self._buttons = (toggle, self._pause_button, self._snapshot_button)
+        for button in self._buttons:
             strip.addWidget(button)
         controls.adjustSize()
-        controls.move(8, 8)
+        controls.move(CONTROL_MARGIN, CONTROL_MARGIN)
         controls.show()
         self._controls = controls
 
-        for button in (toggle, self._pause_button, self._snapshot_button):
+        for button in self._buttons:
             effect = QGraphicsOpacityEffect(button)
             effect.setOpacity(BUTTON_OPACITY)
             button.setGraphicsEffect(effect)
 
         panel.adjustSize()
-        panel.move(8, controls.height() + 10)
+        panel.move(CONTROL_MARGIN, controls.height() + PANEL_GAP)
         self._panel = panel
         # No points yet, so there is nothing to show; the panel appears as
         # soon as the first point is placed.
         self._table_collapsed = False
         self._refresh_rows()
         self._apply_panel_visibility()
+        self._panel_scale = None
+        self._apply_panel_scale()
+
+    def _apply_panel_scale(self) -> None:
+        """Resize the table and controls with the displayed image."""
+        if self._panel is None or self._controls is None:
+            return
+        scale = self._label.display_scale()
+        if self._panel_scale is not None and abs(scale - self._panel_scale) < 0.001:
+            return
+        self._panel_scale = scale
+
+        panel_px = max(1, round(PANEL_FONT_SIZE * scale))
+        self._panel.setStyleSheet(
+            "QWidget { background: rgba(0, 0, 0, 190); color: white;"
+            f"font-family: monospace; font-size: {panel_px}px; }}"
+        )
+        remove_px = max(1, round(REMOVE_FONT_SIZE * scale))
+        remove_style = (
+            "QToolButton { color: white; background: transparent;"
+            f"border: none; font-size: {remove_px}px; }}"
+            "QToolButton:hover { color: #ff8080; }"
+        )
+        for row in self._rows:
+            row["remove"].setStyleSheet(remove_style)
+
+        self._outer.setContentsMargins(
+            *[max(0, round(value * scale)) for value in PANEL_MARGINS]
+        )
+        self._outer.setSpacing(max(0, round(PANEL_SPACING * scale)))
+        self._grid.setHorizontalSpacing(max(0, round(GRID_H_SPACING * scale)))
+        self._grid.setVerticalSpacing(max(0, round(GRID_V_SPACING * scale)))
+        self._strip.setSpacing(max(0, round(CONTROL_SPACING * scale)))
+
+        border = max(1, round(scale))
+        padding = max(0, round(4 * scale))
+        control_style = (
+            "QPushButton, QToolButton { color: white;"
+            "background: rgba(30, 30, 30, 210);"
+            f"border: {border}px solid rgba(120, 120, 120, 210);"
+            "padding: 0px; }"
+            "QPushButton:hover, QToolButton:hover"
+            " { background: rgba(80, 80, 80, 230); }"
+            "QPushButton:checked { background: rgba(170, 50, 50, 230); }"
+            f"QToolButton {{ padding: 0px {padding}px; }}"
+        )
+        for button in self._buttons:
+            button.setStyleSheet(control_style)
+            button.set_scale(scale)
+
+        margin = max(0, round(CONTROL_MARGIN * scale))
+        gap = max(0, round(PANEL_GAP * scale))
+        self._controls.adjustSize()
+        self._controls.move(margin, margin)
+        self._panel.adjustSize()
+        self._panel.move(margin, self._controls.height() + gap)
 
     def _apply_panel_visibility(self) -> None:
         """Show the panel only when points exist and it is not collapsed."""
@@ -861,6 +1070,7 @@ class Window:
         for point in self._points:
             point.update(frame.temps)
         self._label.set_frame(frame)
+        self._apply_panel_scale()
         self._update_rows()
 
     # -- events --------------------------------------------------------------
