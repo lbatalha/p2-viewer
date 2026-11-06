@@ -21,12 +21,14 @@ import numpy as np
 from .frame import CAM_HEIGHT, CAM_WIDTH
 
 try:
-    from PySide6.QtCore import QRect, QSize, Qt, QTimer
+    from PySide6.QtCore import QRect, QRectF, QSize, Qt, QTimer
     from PySide6.QtGui import (
         QColor,
         QFont,
+        QFontDatabase,
         QImage,
         QPainter,
+        QPainterPath,
         QPen,
         QPixmap,
     )
@@ -57,6 +59,13 @@ MAX_POINTS = 4
 
 #: Gap between the cursor and the hover readout.
 HOVER_OFFSET = 14
+
+#: Default style for sample-point labels, overridden by the renderer so the
+#: window markers match the labels baked into the frame.
+DEFAULT_LABEL_FONT = "monospace"
+DEFAULT_LABEL_FONT_SIZE = 14
+DEFAULT_LABEL_STROKE = 2
+DEFAULT_MARKER_OUTLINE = 1
 
 #: Glyphs for the control buttons. Qt falls back to another font when the
 #: chosen family lacks them, so these render even in a monospace face.
@@ -139,6 +148,13 @@ class _AspectLabel(QLabel):
         self._on_add_point = None
         self._on_remove_point = None
         self._on_key = None
+        self._label_font_family = DEFAULT_LABEL_FONT
+        self._label_font_size = DEFAULT_LABEL_FONT_SIZE
+        self._label_stroke = DEFAULT_LABEL_STROKE
+        self._marker_outline = DEFAULT_MARKER_OUTLINE
+        self._frame_width: int | None = None
+        self._label_font = None
+        self._label_font_px = None
         # Keys are handled by this widget so they work without an active
         # window.
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -155,6 +171,51 @@ class _AspectLabel(QLabel):
 
     def set_key_handler(self, handler) -> None:
         self._on_key = handler
+
+    def set_label_style(
+        self,
+        font_spec: str,
+        font_size: int,
+        frame_width: int | None,
+        stroke: int,
+        marker_outline: int = DEFAULT_MARKER_OUTLINE,
+    ) -> None:
+        """Match sample-point markers to the frame's baked-in labels.
+
+        The family, size and outlines come from the renderer; `frame_width` is
+        the width the labels were rendered at, so markers can be scaled with
+        the displayed image instead of staying a fixed screen size.
+        """
+        self._label_font_family = self._resolve_font_family(font_spec)
+        self._label_font_size = font_size
+        self._label_stroke = stroke
+        self._marker_outline = marker_outline
+        self._frame_width = frame_width
+        self._label_font = None
+        self._label_font_px = None
+        self.update()
+
+    @staticmethod
+    def _resolve_font_family(font_spec: str) -> str:
+        """Resolve a font file path to a Qt family, or pass a family through."""
+        if Path(font_spec).is_file():
+            font_id = QFontDatabase.addApplicationFont(font_spec)
+            families = QFontDatabase.applicationFontFamilies(font_id)
+            if families:
+                return families[0]
+            return DEFAULT_LABEL_FONT
+        return font_spec
+
+    def _label_font_for(self, rect: QRect):
+        """The point-label font at the current display scale."""
+        scale = rect.width() / self._frame_width if self._frame_width else 1.0
+        px = max(1, round(self._label_font_size * scale))
+        if self._label_font is None or self._label_font_px != px:
+            font = QFont(self._label_font_family)
+            font.setPixelSize(px)
+            self._label_font = font
+            self._label_font_px = px
+        return self._label_font
 
     def set_points(self, points: list[SamplePoint]) -> None:
         self._points = points
@@ -270,26 +331,65 @@ class _AspectLabel(QLabel):
         if rect is None:
             return
         painter.drawPixmap(rect.topLeft(), self._scaled_pixmap(rect))
-        self._paint_points(painter)
+        self._paint_points(painter, rect)
         self._paint_hover(painter)
 
-    def _paint_points(self, painter: QPainter) -> None:
+    def _paint_points(self, painter: QPainter, rect: QRect) -> None:
         frame = self._frame
         if frame is None:
             return
+        font = self._label_font_for(rect)
+        scale = rect.width() / self._frame_width if self._frame_width else 1.0
+        # The path is filled after it is stroked, so only the outer half of
+        # the pen remains visible: double the width to match the frame's
+        # outline.
+        stroke = max(1.0, 2.0 * self._label_stroke * scale)
+        outline = QPen(QColor(0, 0, 0), stroke)
+        outline.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        # Point shapes are 1 image pixel wide, so they scale with the image.
+        line_width = max(1.0, scale)
+        shape_outline = max(1.0, self._marker_outline * scale)
+        black = QColor(0, 0, 0)
+        radius = max(1, round(5 * scale))
+        arm = max(1, round(9 * scale))
+        # Pen strokes are centred on the shape, so put the black ring just
+        # outside the coloured ring rather than overlapping it.
+        ring_radius = radius + (line_width + shape_outline) / 2
+        ring_pen = QPen(black, shape_outline)
+        cross_pen = QPen(black, line_width + 2 * shape_outline)
+        colour_pen = QPen(QColor(0, 0, 0), line_width)
         for index, point in enumerate(self._points):
             pos = self.widget_pos(point.x, point.y)
             if pos is None:
                 continue
             colour = QColor(*point.colour)
-            painter.setPen(QPen(colour, 1))
-            painter.drawEllipse(pos[0] - 5, pos[1] - 5, 10, 10)
-            painter.drawLine(pos[0] - 9, pos[1], pos[0] + 9, pos[1])
-            painter.drawLine(pos[0], pos[1] - 9, pos[0], pos[1] + 9)
+            colour_pen.setColor(colour)
+            # Black shape first, then the coloured shape on top, so the
+            # outline stays outside the marker.
+            painter.setPen(ring_pen)
+            painter.drawEllipse(QRectF(
+                pos[0] - ring_radius, pos[1] - ring_radius,
+                2 * ring_radius, 2 * ring_radius,
+            ))
+            painter.setPen(cross_pen)
+            painter.drawLine(pos[0] - arm, pos[1], pos[0] + arm, pos[1])
+            painter.drawLine(pos[0], pos[1] - arm, pos[0], pos[1] + arm)
+            painter.setPen(colour_pen)
+            painter.drawEllipse(QRectF(
+                pos[0] - radius, pos[1] - radius, 2 * radius, 2 * radius,
+            ))
+            painter.drawLine(pos[0] - arm, pos[1], pos[0] + arm, pos[1])
+            painter.drawLine(pos[0], pos[1] - arm, pos[0], pos[1] + arm)
             label = f"P{index + 1}"
             if self._format_temp is not None:
                 label += " " + self._format_temp(float(frame.temps[point.y, point.x]))
-            painter.drawText(pos[0] + 8, pos[1] - 7, label)
+            path = QPainterPath()
+            path.addText(pos[0] + 8, pos[1] - 7, font, label)
+            painter.save()
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.strokePath(path, outline)
+            painter.fillPath(path, colour)
+            painter.restore()
 
     def _hover_text(self, coord) -> str | None:
         if coord is None or self._frame is None or self._format_temp is None:
@@ -440,6 +540,11 @@ class Window:
         self,
         title: str = "P2 Pro",
         format_temp=None,
+        font: str = DEFAULT_LABEL_FONT,
+        font_size: int = DEFAULT_LABEL_FONT_SIZE,
+        frame_width: int | None = None,
+        label_stroke: int = DEFAULT_LABEL_STROKE,
+        marker_outline: int = DEFAULT_MARKER_OUTLINE,
     ) -> None:
         if QApplication is None:
             raise DisplayError(
@@ -448,6 +553,11 @@ class Window:
             )
         self.title = title
         self.format_temp = format_temp
+        self.label_font = font
+        self.label_font_size = font_size
+        self.frame_width = frame_width
+        self.label_stroke = label_stroke
+        self.marker_outline = marker_outline
         self.app = None
         self._label = None
         self._timer = None
@@ -479,6 +589,13 @@ class Window:
         self._label.setWindowTitle(self.title)
         self._label.resize(width, height)
         self._label.setStyleSheet("background: black;")
+        self._label.set_label_style(
+            self.label_font,
+            self.label_font_size,
+            self.frame_width or width,
+            self.label_stroke,
+            self.marker_outline,
+        )
         if self.format_temp is not None:
             self._label.set_formatter(self.format_temp)
         self._label.set_point_handler(self.add_point)

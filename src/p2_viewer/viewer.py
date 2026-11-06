@@ -31,6 +31,9 @@ DEFAULT_UNIT = "C"
 #: Outline drawn around label text, so it stays readable over any colour.
 LABEL_STROKE = 2
 
+#: Outline drawn around sample-point shapes, in image pixels.
+MARKER_OUTLINE = 1
+
 #: Default font size for the main labels.
 DEFAULT_FONT_SIZE = 14
 
@@ -89,7 +92,7 @@ class Renderer:
         self.unit = unit
         self.font_size = font_size
         self.font = load_font(font, font_size)
-        # Secondary labels (markers and legend ticks) are slightly smaller.
+        # Legend ticks are slightly smaller than the main labels.
         self.font_small = load_font(font, max(7, round(font_size * 0.8)))
         # legend geometry (kept here so render and layout agree)
         self.bar_w = 14
@@ -244,11 +247,24 @@ class Renderer:
         s = self.scale
         radius = 5
         arm = 9
+        outline = MARKER_OUTLINE
 
         for index, point in enumerate(points):
             px = point.x * s + s // 2
             py = point.y * s + s // 2
             colour = point.colour
+            # Draw the black outline first, expanded by its width, then the
+            # coloured shape on top so the outline stays outside it.
+            draw.ellipse(
+                [px - radius - outline, py - radius - outline,
+                 px + radius + outline - 1, py + radius + outline - 1],
+                outline=(0, 0, 0),
+                width=outline + 1,
+            )
+            draw.line([(px - arm, py), (px + arm, py)],
+                      fill=(0, 0, 0), width=1 + 2 * outline)
+            draw.line([(px, py - arm), (px, py + arm)],
+                      fill=(0, 0, 0), width=1 + 2 * outline)
             draw.ellipse(
                 [px - radius, py - radius,
                  px + radius - 1, py + radius - 1],
@@ -264,7 +280,7 @@ class Renderer:
                 f"{self.format_temp(float(temps[point.y, point.x]))}"
             )
             draw.text((px + 8, py - 7), label, fill=colour,
-                      font=self.font_small, stroke_width=1,
+                      font=self.font, stroke_width=LABEL_STROKE,
                       stroke_fill=(0, 0, 0))
 
         return np.asarray(im, dtype=np.uint8)
@@ -594,6 +610,11 @@ def main() -> int:
                 window = Window(
                     f"P2 Pro {out_w}x{out_h}",
                     format_temp=renderer.format_temp,
+                    font=args.font,
+                    font_size=renderer.font_size,
+                    frame_width=out_w,
+                    label_stroke=LABEL_STROKE,
+                    marker_outline=MARKER_OUTLINE,
                 )
                 window.open(out_w, out_h)
             except DisplayError as exc:
